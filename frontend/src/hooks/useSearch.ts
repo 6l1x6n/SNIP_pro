@@ -47,7 +47,7 @@ interface UseSearchOptions {
   setAuthMode: (v: 'login' | 'register') => void
 }
 
-export function useSearch({ user, setShowAuth, setAuthMode }: UseSearchOptions) {
+export function useSearch(_opts: UseSearchOptions) {
   const [query, setQuery] = useState('')
   const [mode, setMode] = useState<SearchMode>('fast')
   const [loading, setLoading] = useState(false)
@@ -64,14 +64,11 @@ export function useSearch({ user, setShowAuth, setAuthMode }: UseSearchOptions) 
   const [filterStatus, setFilterStatus] = useState('active')
   const [showFilters, setShowFilters] = useState(false)
   const [searchPinnedOnly, setSearchPinnedOnly] = useState(false)
+  const [quotaExceeded, setQuotaExceeded] = useState(false)
 
   const doSearch = useCallback(async (q: string = query) => {
     if (!q.trim()) return
-    if (!user) {
-      setShowAuth(true)
-      setAuthMode('login')
-      return
-    }
+    setQuotaExceeded(false)
     // Update history
     const qq = q.trim()
     setSearchHistory(prev => {
@@ -98,6 +95,13 @@ export function useSearch({ user, setShowAuth, setAuthMode }: UseSearchOptions) 
           filters: Object.keys(filters).length ? filters : undefined,
         }),
       })
+      if (r.status === 429) {
+        const body = await r.json().catch(() => ({}))
+        const msg = body.detail?.message || body.message || 'Лимит запросов исчерпан. Зарегистрируйтесь чтобы продолжить.'
+        setQuotaExceeded(true)
+        setError(msg)
+        return
+      }
       if (!r.ok) throw new Error(await r.text())
       const data: SearchResponse = await r.json()
       setResp(data)
@@ -106,7 +110,7 @@ export function useSearch({ user, setShowAuth, setAuthMode }: UseSearchOptions) 
     } finally {
       setLoading(false)
     }
-  }, [query, mode, filterType, filterStatus, user, setShowAuth, setAuthMode])
+  }, [query, mode, filterType, filterStatus])
 
   const clearHistory = useCallback(() => {
     setSearchHistory([])
@@ -126,5 +130,7 @@ export function useSearch({ user, setShowAuth, setAuthMode }: UseSearchOptions) 
     showFilters, setShowFilters,
     searchPinnedOnly, setSearchPinnedOnly,
     doSearch,
+    quotaExceeded,
+    setQuotaExceeded,
   }
 }

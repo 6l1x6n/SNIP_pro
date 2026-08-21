@@ -204,6 +204,7 @@ export default function App() {
           filterStatus={search.filterStatus} setFilterStatus={search.setFilterStatus}
           showFilters={search.showFilters} setShowFilters={search.setShowFilters}
           searchPinnedOnly={search.searchPinnedOnly} setSearchPinnedOnly={search.setSearchPinnedOnly}
+          quotaExceeded={search.quotaExceeded} setQuotaExceeded={search.setQuotaExceeded}
           doSearch={search.doSearch}
           highlightPalette={highlightPalette} setHighlightPalette={setHighlightPalette}
           monoHex={monoHex} setMonoHex={setMonoHex}

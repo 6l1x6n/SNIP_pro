@@ -70,6 +70,8 @@ type SearchViewProps = {
   setBasketDragging: (v: boolean) => void
   setDraggedDocId: (v: string | null) => void
   searchInputRef?: React.RefObject<HTMLInputElement>
+  quotaExceeded?: boolean
+  setQuotaExceeded?: (v: boolean) => void
 }
 
 export function SearchView(props: SearchViewProps) {
@@ -81,7 +83,7 @@ export function SearchView(props: SearchViewProps) {
     doSearch, highlightPalette, setHighlightPalette, monoHex, setMonoHex,
     user, setShowAuth, setAuthMode, openPdf, handleBasketFiles,
     activeBasketId, baskets, pinnedItems, isPinned, assignments,
-    localDocs, setBasketDragging, setDraggedDocId, searchInputRef,
+    localDocs, setBasketDragging, setDraggedDocId, searchInputRef, quotaExceeded, setQuotaExceeded,
   } = props
 
   const [examples, setExamples] = useState<string[]>(() => loadQuickExamples())
@@ -235,7 +237,20 @@ export function SearchView(props: SearchViewProps) {
           </div>
         )}
 
-        {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl p-4 text-sm">{error}</div>}
+        {error && !quotaExceeded && <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl p-4 text-sm">{error}</div>}
+
+        {quotaExceeded && (
+          <div className="bg-gradient-to-br from-amber-50 to-orange-50 border border-amber-200 rounded-2xl p-6 text-center">
+            <div className="w-12 h-12 mx-auto rounded-full bg-amber-100 flex items-center justify-center text-2xl mb-3">🔒</div>
+            <div className="font-semibold text-slate-900 text-lg">Бесплатный лимит исчерпан</div>
+            <div className="text-sm text-slate-600 mt-2 max-w-md mx-auto">Вы использовали все бесплатные запросы. Зарегистрируйтесь чтобы получить 200 запросов и полный доступ к базе строительных норм.</div>
+            <div className="mt-4 flex items-center justify-center gap-3">
+              <button onClick={() => { if (setAuthMode) setAuthMode('register'); if (setShowAuth) setShowAuth(true) }} className="px-6 py-2.5 rounded-xl bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 transition">Зарегистрироваться</button>
+              <button onClick={() => { if (setAuthMode) setAuthMode('login'); if (setShowAuth) setShowAuth(true) }} className="px-6 py-2.5 rounded-xl bg-white border border-slate-200 text-sm text-slate-700 hover:bg-slate-50 transition">Войти</button>
+            </div>
+            <div className="text-[11px] text-slate-400 mt-3">Регистрация бесплатная • 200 запросов • без привязки карты</div>
+          </div>
+        )}
 
         {/* ── Empty State ── */}
         {!resp && !loading && !error && user && (

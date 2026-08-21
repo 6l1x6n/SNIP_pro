@@ -1,7 +1,7 @@
 import time
 import logging
 import traceback
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from slowapi import Limiter
@@ -13,6 +13,7 @@ from app.embeddings.provider import get_embedding_provider
 from app.llm.answer import AnswerService
 from app.config import settings
 from app.core.deps import get_current_user_optional
+from app.core.quota import check_quota
 from app.models.user import User
 from app.models.document import Chunk
 
@@ -48,9 +49,11 @@ def get_answer_service():
 
 @router.post("/search", response_model=SearchResponse)
 @limiter.limit("30/minute")
-async def search(request: Request, req: SearchRequest, db: AsyncSession = Depends(get_db), current_user: User | None = Depends(get_current_user_optional)):
+async def search(request: Request, req: SearchRequest, db: AsyncSession = Depends(get_db), current_user: User | None = Depends(get_current_user_optional), response: Response = None):
     if settings.require_auth and not current_user:
         raise HTTPException(status_code=401, detail="Требуется вход")
+    # --- Quota check (anonymous: 30/device, registered: 200/user) ---
+    quota_info = check_quota(request, current_user)
     if not req.query or len(req.query.strip()) < 2:
         raise HTTPException(status_code=400, detail="Query too short")
     start = time.time()
@@ -195,7 +198,7 @@ async def search(request: Request, req: SearchRequest, db: AsyncSession = Depend
     elif is_low_confidence:
         message = "Показаны ближайшие совпадения с низкой релевантностью — попробуйте переформулировать запрос или снять фильтры."
 
-    return SearchResponse(
+    result = SearchResponse(
         query=req.query,
         mode=req.mode,
         answer=answer,
@@ -204,6 +207,10 @@ async def search(request: Request, req: SearchRequest, db: AsyncSession = Depend
         total_found=len(results),
         message=message
     )
+    if response:
+        response.headers["X-Quota-Remaining"] = str(quota_info.get("remaining", 0))
+        response.headers["X-Quota-Limit"] = str(quota_info.get("limit", 0))
+    return result
 
 @router.get("/search")
 @limiter.limit("30/minute")
