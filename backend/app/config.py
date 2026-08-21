@@ -17,9 +17,9 @@ class Settings(BaseSettings):
     embedding_device: str = "cpu"
     # LLM
     ollama_host: str = "http://localhost:11434"
-    ollama_model: str = "gemma4:e2b"  # best quality local ru/kz, fallback qwen2.5-coder
+    ollama_model: str = "qwen/qwen3.6-27b"  # groq current, was gemma4:e2b local
     groq_api_key: str | None = None
-    groq_model: str | None = None
+    groq_model: str | None = "qwen/qwen3.6-27b"  # was llama-3.1-8b-instant decommissioned 2025
     llm_temperature: float = 0.1
     # Search
     top_k_bm25: int = 50
@@ -45,11 +45,17 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60 * 24 * 7  # 7 days for convenience MVP
     admin_email: str | None = None  # first user or this email becomes superuser
     require_auth: bool = False  # if True, /api/search requires login
+    # Quota — безлимит по умолчанию для prod (Cloudflare Pages free)
+    quota_enabled: bool = False  # if False, check_quota is no-op (безлимит)
+    quota_anon_limit: int = 999999
+    quota_registered_limit: int = 999999
+    quota_window_hours: int = 24  # reserved for future window reset
+    disable_db: bool = False  # if True, run without Postgres (mock mode for Pages)
     # App
     app_name: str = "SNIP_pro - Интеллектуальный справочник СНиП РК"
     version: str = "0.1.0"
     debug: bool = True
-    cors_origins: str = "http://localhost:5173,http://localhost:3000,https://snip.pp.ua,https://www.snip.pp.ua"
+    cors_origins: str = "http://localhost:5173,http://localhost:3000,https://snip.pp.ua,https://www.snip.pp.ua,https://*.pages.dev,https://*.onrender.com"
 
     model_config = {"extra": "ignore", "env_file": str(BASE_DIR / ".env"), "env_file_encoding": "utf-8"}
 

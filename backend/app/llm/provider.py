@@ -22,9 +22,9 @@ class LLMProvider:
         # if groq key present and host is groq, use groq_model
         if groq_key and "groq.com" in self.host:
             self.model = model or groq_model or settings.ollama_model
-            # map legacy gemma4:e2b to groq model
-            if self.model == "gemma4:e2b":
-                self.model = groq_model or "llama-3.1-8b-instant"
+            # map legacy models to current groq models (decommissioned 2025)
+            if self.model in ("gemma4:e2b", "llama-3.1-8b-instant", "llama3-8b-8192"):
+                self.model = groq_model or "qwen/qwen3.6-27b"
         else:
             self.model = model or settings.ollama_model
 
@@ -53,7 +53,13 @@ class LLMProvider:
                 })
                 if resp.status_code == 200:
                     data = resp.json()
-                    return data["choices"][0]["message"]["content"]
+                    content = data["choices"][0]["message"]["content"]
+                    # strip <think> chain-of-thought from qwen (robust, with/without closing tag)
+                    if "<think>" in content:
+                        import re as _re
+                        content = _re.sub(r"<think>.*?(?:</think>\s*|$)", "", content, flags=_re.S)
+                        content = content.replace("<think>", "").replace("</think>", "")
+                    return content.strip()
                 # handle rate limit 429 with retry once
                 if resp.status_code == 429:
                     import asyncio
@@ -69,7 +75,12 @@ class LLMProvider:
                         "max_tokens": max_tokens
                     })
                     if resp2.status_code == 200:
-                        return resp2.json()["choices"][0]["message"]["content"]
+                        _c = resp2.json()["choices"][0]["message"]["content"]
+                        if "<think>" in _c:
+                            import re as _re2
+                            _c = _re2.sub(r"<think>.*?(?:</think>\s*|$)", "", _c, flags=_re2.S)
+                            _c = _c.replace("<think>", "").replace("</think>", "")
+                        return _c.strip()
             except Exception as e:
                 # if groq, don't fallback to Ollama /api/chat
                 if groq_key and "groq.com" in self.host:

@@ -25,63 +25,71 @@ logger = get_logger("app.main")
 async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle manager."""
     # --- Startup ---
-    from app.core.db import async_engine, Base
-    from app.models.document import Document, Chunk, DocumentVersion, CollectorLog  # noqa
-    from app.models.user import User  # noqa
-    from app.models.pinned import PinnedDocument  # noqa
-
-    async with async_engine.begin() as conn:
-        from sqlalchemy import text
-
+    _disable_db = os.getenv("DISABLE_DB", "0") == "1" or getattr(settings, "disable_db", False)
+    if _disable_db:
+        logger.warning("DISABLE_DB=1 — running in mock mode without Postgres (Cloudflare Pages free)")
+    else:
         try:
-            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
-        except Exception as e:
-            logger.warning("startup extension error: %s", e)
+            from app.core.db import async_engine, Base
+            from app.models.document import Document, Chunk, DocumentVersion, CollectorLog  # noqa
+            from app.models.user import User  # noqa
+            from app.models.pinned import PinnedDocument  # noqa
 
-        await conn.run_sync(Base.metadata.create_all)
+            async with async_engine.begin() as conn:
+                from sqlalchemy import text
 
-        # lичная программа: owner_id для документов (персональные)
-        try:
-            await conn.execute(text(
-                "ALTER TABLE documents ADD COLUMN IF NOT EXISTS owner_id "
-                "UUID REFERENCES users(id) ON DELETE CASCADE"
-            ))
-            await conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS idx_documents_owner_id ON documents(owner_id)"
-            ))
-        except Exception as e:
-            logger.warning("startup owner_id migration: %s", e)
+                try:
+                    await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+                    await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+                except Exception as e:
+                    logger.warning("startup extension error: %s", e)
 
-        # Ensure tsvector + vector indexes
-        try:
-            await conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS idx_chunks_tsv "
-                "ON chunks USING gin (to_tsvector('russian', text))"
-            ))
-            await conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS idx_chunks_embedding "
-                "ON chunks USING hnsw (embedding vector_cosine_ops)"
-            ))
-        except Exception as e:
-            logger.warning("startup index error: %s", e)
+                await conn.run_sync(Base.metadata.create_all)
 
-        # Personal API keys: add column (create_all won't alter existing tables)
-        try:
-            await conn.execute(text(
-                "ALTER TABLE users ADD COLUMN IF NOT EXISTS api_key VARCHAR(120)"
-            ))
-            await conn.execute(text(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_api_key "
-                "ON users(api_key) WHERE api_key IS NOT NULL"
-            ))
+                # lичная программа: owner_id для документов (персональные)
+                try:
+                    await conn.execute(text(
+                        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS owner_id "
+                        "UUID REFERENCES users(id) ON DELETE CASCADE"
+                    ))
+                    await conn.execute(text(
+                        "CREATE INDEX IF NOT EXISTS idx_documents_owner_id ON documents(owner_id)"
+                    ))
+                except Exception as e:
+                    logger.warning("startup owner_id migration: %s", e)
+
+                # Ensure tsvector + vector indexes
+                try:
+                    await conn.execute(text(
+                        "CREATE INDEX IF NOT EXISTS idx_chunks_tsv "
+                        "ON chunks USING gin (to_tsvector('russian', text))"
+                    ))
+                    await conn.execute(text(
+                        "CREATE INDEX IF NOT EXISTS idx_chunks_embedding "
+                        "ON chunks USING hnsw (embedding vector_cosine_ops)"
+                    ))
+                except Exception as e:
+                    logger.warning("startup index error: %s", e)
+
+                # Personal API keys: add column (create_all won't alter existing tables)
+                try:
+                    await conn.execute(text(
+                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS api_key VARCHAR(120)"
+                    ))
+                    await conn.execute(text(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_api_key "
+                        "ON users(api_key) WHERE api_key IS NOT NULL"
+                    ))
+                except Exception as e:
+                    logger.warning("startup api_key migration: %s", e)
         except Exception as e:
-            logger.warning("startup api_key migration: %s", e)
+            logger.warning("DB init skipped (DISABLE_DB or no Postgres): %s", e)
 
     logger.info(
-        "%s v%s ready, embedding=%s, llm=%s",
+        "%s v%s ready, embedding=%s, llm=%s, disable_db=%s",
         settings.app_name, settings.version,
         settings.embedding_model, settings.ollama_model,
+        os.getenv("DISABLE_DB", "0") == "1" or getattr(settings, "disable_db", False),
     )
 
     # Start collector scheduler (optional)
@@ -105,9 +113,17 @@ async def lifespan(app: FastAPI):
 
 
 # ---------------------------------------------------------------------------
-# App
+# App — безлимит квота, мягкий rate-limit для free хостинга
 # ---------------------------------------------------------------------------
-limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
+# QUOTA_ENABLED=0 → slowapi тоже не душит (1000/min вместо 30/min)
+_slow_limit = "1000/minute" if os.getenv("QUOTA_ENABLED", "0") == "0" else "200/minute"
+try:
+    from app.config import settings as _s
+    if not getattr(_s, "quota_enabled", False):
+        _slow_limit = "1000/minute"
+except Exception:
+    pass
+limiter = Limiter(key_func=get_remote_address, default_limits=[_slow_limit])
 
 app = FastAPI(
     title=settings.app_name,
@@ -133,16 +149,29 @@ async def security_headers(request: Request, call_next):
 
 
 # ---------------------------------------------------------------------------
-# CORS — restricted methods & headers
+# CORS — restricted methods & headers + wildcard for *.pages.dev / *.onrender.com
 # ---------------------------------------------------------------------------
 origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Accept", "X-Device-Id"],
-)
+# allow all если DISABLE_DB (демо без домена) или если в списке есть wildcard
+_cors_allow_all = any("*" in o for o in origins) or os.getenv("DISABLE_DB", "0") == "1"
+if _cors_allow_all:
+    # для демо без домена — разрешаем Pages/Render без перечисления
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "Accept", "X-Device-Id", "X-API-Key"],
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "Accept", "X-Device-Id", "X-API-Key"],
+        allow_origin_regex=r"https://.*\.pages\.dev|https://.*\.onrender\.com",
+    )
 
 
 # ---------------------------------------------------------------------------

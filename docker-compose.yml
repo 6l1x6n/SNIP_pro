@@ -8,8 +8,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-snip_pro}
     volumes:
       - pgdata:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
+    # No public ports: db is reachable only inside the docker network (via backend).
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-snip}"]
@@ -31,16 +30,19 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-https://snip.pp.ua,https://www.snip.pp.ua,http://localhost:5173}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
       OLLAMA_HOST: ${OLLAMA_HOST:-https://api.groq.com/openai/v1}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama-3.1-8b-instant}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen/qwen3.6-27b}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
-      GROQ_MODEL: ${GROQ_MODEL:-llama-3.1-8b-instant}
+      GROQ_MODEL: ${GROQ_MODEL:-qwen/qwen3.6-27b}
       ENABLE_COLLECTOR: ${ENABLE_COLLECTOR:-0}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-postalarchive@gmail.com}
+      QUOTA_ENABLED: ${QUOTA_ENABLED:-0}
+      QUOTA_ANON_LIMIT: ${QUOTA_ANON_LIMIT:-999999}
+      QUOTA_REGISTERED_LIMIT: ${QUOTA_REGISTERED_LIMIT:-999999}
+      DISABLE_DB: ${DISABLE_DB:-0}
     volumes:
+      # Persist uploaded PDFs / extracted storage. Code is baked into the image (prod).
       - ./backend/storage:/app/storage
-      - ./backend/app:/app/app  # for hot reload dev, remove in prod
-    ports:
-      - "8001:8001"
+    # No public port: backend is reached only via Caddy (reverse_proxy backend:8001).
     depends_on:
       db:
         condition: service_healthy
@@ -66,10 +68,10 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        VITE_API_BASE: ${VITE_API_BASE:-https://snip.pp.ua}
+        # Must be set in .env for prod (e.g. VITE_API_BASE=https://snip.pp.ua).
+        VITE_API_BASE: ${VITE_API_BASE:-http://localhost}
     container_name: snip_frontend
-    ports:
-      - "5173:80"
+    # No public port: Caddy reverse_proxy frontend:80 handles 80/443.
     depends_on: [backend]
     restart: unless-stopped
 

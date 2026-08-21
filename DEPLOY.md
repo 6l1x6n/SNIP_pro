@@ -41,6 +41,7 @@ cd ~/SNIP_pro
 openssl rand -hex 32  # → в SECRET_KEY
 cp .env.example .env
 nano .env  # POSTGRES_PASSWORD, SECRET_KEY, ADMIN_EMAIL=ваш@email, CORS_ORIGINS=https://snip.pp.ua
+# ОБЯЗАТЕЛЬНО задайте VITE_API_BASE=https://snip.pp.ua (фронт собирается с ним внутри образа)
 
 docker compose up -d --build
 docker compose logs -f backend  # ждите "ready"
@@ -57,6 +58,14 @@ docker compose exec backend python -c "from scripts.seed import main; import asy
 ```bash
 cd ~/SNIP_pro && git pull && docker compose up -d --build
 ```
+
+### 6. Прод-заметки (compose уже заточен под прод)
+
+* `docker-compose.yml` **не публикует** порты `db` (5432), `backend` (8001) и `frontend` (80): все они доступны только внутри docker-сети, а наружу ходит только **Caddy** (80/443). Снаружи БД и API недостижимы напрямую.
+* Код бэкенда **запечатан в образ** (bind-mount `./backend/app` убран) — локальные правки не перезапишут прод случайно. Для обновления кода: `git pull && docker compose up -d --build`.
+* Загрузки хранятся в `./backend/storage` (монтируется как volume) — не потеряются при пересборке образа.
+* `VITE_API_BASE` подставляется **на этапе сборки** фронта (build arg). Менять адрес API после сборки нельзя — только через `--build` с новым `.env`.
+* Точка входа TLS: Cloudflare (Full strict) → Caddy (auto Let's Encrypt) → сервисы. Прямой HTTP на IP отвечает заглушкой.
 
 ---
 

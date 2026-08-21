@@ -17,6 +17,10 @@ router = APIRouter(prefix="/api", tags=["documents"])
 
 @router.get("/documents", response_model=List[DocumentOut])
 async def list_documents(status: Optional[str] = None, skip: int = 0, limit: int = 50, db: AsyncSession = Depends(get_db), current_user: Optional[User] = Depends(get_current_user_optional)):
+    import os as _os
+    from app.config import settings as _set
+    if _os.getenv("DISABLE_DB", "0") == "1" or getattr(_set, "disable_db", False) or db is None:
+        return []
     # личная программа: показываем свои + общие (owner_id is NULL)
     base_filter = []
     if current_user:
@@ -118,6 +122,10 @@ async def list_chunks(doc_id: uuid.UUID, skip: int = 0, limit: int = 20, db: Asy
 
 @router.get("/stats")
 async def stats(db: AsyncSession = Depends(get_db), current_user: Optional[User] = Depends(get_current_user_optional)):
+    import os as _os
+    from app.config import settings as _set
+    if _os.getenv("DISABLE_DB", "0") == "1" or getattr(_set, "disable_db", False) or db is None:
+        return {"total_documents": 0, "active_documents": 0, "total_chunks": 0, "last_collector": None, "mode": "no_db"}
     # персонально: считаем свои + общие
     base_q = select(Document)
     if current_user:
@@ -150,6 +158,10 @@ async def stats(db: AsyncSession = Depends(get_db), current_user: Optional[User]
 
 @router.get("/health")
 async def health(db: AsyncSession = Depends(get_db)):
+    import os as _os
+    from app.config import settings as _set
+    if _os.getenv("DISABLE_DB", "0") == "1" or getattr(_set, "disable_db", False) or db is None:
+        return {"status": "ok", "db": False, "mode": "no_db"}
     try:
         await db.execute(select(1))
         db_ok = True

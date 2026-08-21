@@ -48,7 +48,7 @@ def get_answer_service():
     return _answer_service
 
 @router.post("/search", response_model=SearchResponse)
-@limiter.limit("30/minute")
+@limiter.limit("1000/minute")
 async def search(request: Request, req: SearchRequest, db: AsyncSession = Depends(get_db), current_user: User | None = Depends(get_current_user_optional), response: Response = None):
     if settings.require_auth and not current_user:
         raise HTTPException(status_code=401, detail="Требуется вход")
@@ -63,6 +63,37 @@ async def search(request: Request, req: SearchRequest, db: AsyncSession = Depend
         search_filters["owner_id"] = str(current_user.id)
     else:
         search_filters["owner_id"] = None
+
+    # DISABLE_DB mock — отдаём пустой результат + прямой LLM ответ без RAG или заглушку
+    import os as _os
+    _disable_db = _os.getenv("DISABLE_DB", "0") == "1" or getattr(settings, "disable_db", False) or db is None
+    if _disable_db:
+        # без БД: пробуем ответить через LLM напрямую (без контекста) или отдаём заглушку
+        # чтобы не падать при Cloudflare Pages деплое без Postgres
+        try:
+            from app.llm.provider import LLMProvider as _LLM
+            _llm = _LLM()
+            # прямой промпт без RAG — честно говорим что базы нет
+            _ans = await _llm.generate(
+                prompt=f"Пользователь спросил: {req.query}\nОтветь кратко, укажи что нормативная база сейчас не подключена (режим без БД) и предложи загрузить PDF в Документы. Не выдумывай пункты СНиП.",
+                system="Ты помощник SNIP.pro. База данных отключена (DISABLE_DB=1), отвечай честно без выдумок.",
+                max_tokens=500,
+            )
+            # strip <think> от qwen
+            if _ans and "<think>" in _ans:
+                import re as _re
+                _ans = _re.sub(r"<think>.*?(?:</think>\s*|$)", "", _ans, flags=_re.S)
+            _answer_text = _ans.strip() if _ans else "База данных не подключена (режим без БД). Загрузите PDF в Документы чтобы искать по нормам."
+        except Exception as _e:
+            logger.warning("DISABLE_DB llm fallback: %s", _e)
+            _answer_text = "База данных не подключена (DISABLE_DB=1). Загрузите PDF в Документы или подключите Postgres для поиска."
+        took_ms = int((time.time() - start)*1000)
+        _answer = AnswerBlock(answer=_answer_text, is_grounded=False)
+        result = SearchResponse(query=req.query, mode=req.mode, answer=_answer, results=[], took_ms=took_ms, total_found=0, message="Режим без БД: поиск по документам отключен. Подключите Postgres или загрузите PDF.")
+        if response:
+            response.headers["X-Quota-Remaining"] = str(quota_info.get("remaining", 0))
+            response.headers["X-Quota-Limit"] = str(quota_info.get("limit", 0))
+        return result
 
     search_svc = get_search_service()
     try:
@@ -213,7 +244,7 @@ async def search(request: Request, req: SearchRequest, db: AsyncSession = Depend
     return result
 
 @router.get("/search")
-@limiter.limit("30/minute")
+@limiter.limit("1000/minute")
 async def search_get(request: Request, q: str = Query(..., min_length=2), mode: str = Query("fast"), top_k: int = Query(10, le=20), db: AsyncSession = Depends(get_db), current_user: User | None = Depends(get_current_user_optional)):
     req = SearchRequest(query=q, mode=mode, top_k=top_k)
     return await search(request, req, db, current_user)
