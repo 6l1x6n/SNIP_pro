@@ -1,0 +1,6 @@
+# Cloudflare Pages configuration for the SNIP.pro frontend (static SPA).
+# Deploy with:  wrangler pages deploy dist
+# Or connect the Git repo in the Cloudflare Dashboard (build: npm install && npm run build, output: dist).
+name = "snippy-llm"
+compatibility_date = "2024-09-23"
+pages_build_output_dir = "dist"

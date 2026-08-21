@@ -1,0 +1,36 @@
+SNIP.pro — Запуск в 1 клик (macOS)
+====================================
+
+Вариант 1 — Двойной клик (рекомендуется):
+  • SNIP_pro.app  → двойной клик → откроется Terminal, запустит Postgres + Ollama + Backend :8001 + Frontend :5173, откроет браузер http://localhost:5173
+  • STOP.app     → остановить Backend и Frontend (Postgres/Ollama остаются)
+
+Вариант 2 — Через Terminal (для логов):
+  • SNIP_pro.command → двойной клик (откроется Terminal) или в терминале: ./SNIP_pro.command
+  • STOP.command     → остановить
+  • start.sh / stop.sh — то же для CLI
+
+Вариант 3 — Вручную:
+  /opt/homebrew/opt/postgresql@17/bin/pg_ctl -D /opt/homebrew/var/postgresql@17 -l /tmp/pg17.log start
+  ollama serve &
+  /opt/homebrew/bin/python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8001 --app-dir backend &
+  /opt/homebrew/bin/npm --prefix frontend run dev -- --host 0.0.0.0 --port 5173
+
+После запуска:
+  Frontend: http://localhost:5173  (основной UI)
+  Backend:  http://localhost:8001/docs  (Swagger)
+  Stats:    http://localhost:8001/api/stats
+  Health:   http://localhost:8001/api/health
+
+Логи:
+  tail -f /tmp/snip_backend.log
+  tail -f /tmp/snip_frontend.log
+  tail -f /tmp/pg17.log
+  tail -f /tmp/ollama.log
+
+Если macOS блокирует запуск (“неизвестный разработчик”):
+  • Правый клик → Открыть → Открыть
+  • Или: xattr -d com.apple.quarantine SNIP_pro.app
+  • Или: Системные настройки → Конфиденциальность → Разрешить
+
+Первый запуск может занять 1-2 мин (загрузка модели paraphrase-multilingual-MiniLM).

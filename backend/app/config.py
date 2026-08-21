@@ -1,0 +1,70 @@
+from pydantic_settings import BaseSettings
+from pathlib import Path
+import os
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+STORAGE_DIR = BASE_DIR / "storage"
+PDF_DIR = STORAGE_DIR / "pdfs"
+
+class Settings(BaseSettings):
+    # DB
+    database_url: str = "postgresql+asyncpg://alikhan@/snip_pro?host=/tmp"
+    sync_database_url: str = "postgresql://alikhan@/snip_pro?host=/tmp"
+    # Embedding
+    embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"  # lightweight, ru/kz/en, 384d, fallback for MVP
+    # For production: "BAAI/bge-m3" (1024d) - download heavy, switch via env
+    embedding_dim: int = 384
+    embedding_device: str = "cpu"
+    # LLM
+    ollama_host: str = "http://localhost:11434"
+    ollama_model: str = "gemma4:e2b"  # best quality local ru/kz, fallback qwen2.5-coder
+    groq_api_key: str | None = None
+    groq_model: str | None = None
+    llm_temperature: float = 0.1
+    # Search
+    top_k_bm25: int = 50
+    top_k_vector: int = 50
+    top_k_rerank: int = 30
+    top_k_final: int = 10
+    # Fast/Deep split (headroom)
+    top_k_bm25_fast: int = 50
+    top_k_bm25_deep: int = 80
+    top_k_vector_fast: int = 50
+    top_k_vector_deep: int = 80
+    top_k_rerank_fast: int = 30
+    top_k_rerank_deep: int = 40
+    llm_max_tokens_fast: int = 1000
+    llm_max_tokens_deep: int = 1600
+    llm_temp_fast: float = 0.1
+    llm_temp_deep: float = 0.15
+    # Collector
+    collector_interval_hours: int = 24
+    # Auth / Security
+    secret_key: str = "change-me-please-generate-32+chars-secret"
+    jwt_algorithm: str = "HS256"
+    access_token_expire_minutes: int = 60 * 24 * 7  # 7 days for convenience MVP
+    admin_email: str | None = None  # first user or this email becomes superuser
+    require_auth: bool = False  # if True, /api/search requires login
+    # App
+    app_name: str = "SNIP_pro - Интеллектуальный справочник СНиП РК"
+    version: str = "0.1.0"
+    debug: bool = True
+    cors_origins: str = "http://localhost:5173,http://localhost:3000,https://snip.pp.ua,https://www.snip.pp.ua"
+
+    model_config = {"extra": "ignore", "env_file": str(BASE_DIR / ".env"), "env_file_encoding": "utf-8"}
+
+    def model_post_init(self, __context) -> None:
+        """Validate critical security settings after initialization."""
+        _DEFAULT_SECRET = "change-me-please-generate-32+chars-secret"
+        if self.secret_key == _DEFAULT_SECRET:
+            import warnings
+            warnings.warn(
+                "⚠️  SECURITY: secret_key is using the default value! "
+                "Set a real SECRET_KEY in your .env file. "
+                "JWT tokens signed with the default key are forgeable.",
+                stacklevel=2,
+            )
+
+settings = Settings()
+PDF_DIR.mkdir(parents=True, exist_ok=True)
+(STORAGE_DIR / "chunks").mkdir(parents=True, exist_ok=True)

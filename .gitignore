@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+
+# Env / secrets
+.env
+backend/.env
+.env.local
+*.local
+
+# Storage
+backend/storage/
+backend/storage
+
+# Logs
+*.log
+npm-debug.log*
+
+# Large binary documents (not source code)
+*.pdf
+!frontend/public/*.pdf
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# Docker volumes (local data)
+pgdata/
+caddy_data/
+caddy_config/

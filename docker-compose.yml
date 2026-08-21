@@ -1,0 +1,94 @@
+services:
+  db:
+    image: ankane/pgvector:latest
+    container_name: snip_db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-snip}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-snip_strong_pass_change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-snip_pro}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-snip}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: snip_backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-snip}:${POSTGRES_PASSWORD:-snip_strong_pass_change_me}@db:5432/${POSTGRES_DB:-snip_pro}
+      SYNC_DATABASE_URL: postgresql://${POSTGRES_USER:-snip}:${POSTGRES_PASSWORD:-snip_strong_pass_change_me}@db:5432/${POSTGRES_DB:-snip_pro}
+      SECRET_KEY: ${SECRET_KEY:-please-generate-openssl-rand-hex-32-change-me}
+      JWT_ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 10080
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://snip.pp.ua,https://www.snip.pp.ua,http://localhost:5173}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
+      OLLAMA_HOST: ${OLLAMA_HOST:-https://api.groq.com/openai/v1}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama-3.1-8b-instant}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-llama-3.1-8b-instant}
+      ENABLE_COLLECTOR: ${ENABLE_COLLECTOR:-0}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-postalarchive@gmail.com}
+    volumes:
+      - ./backend/storage:/app/storage
+      - ./backend/app:/app/app  # for hot reload dev, remove in prod
+    ports:
+      - "8001:8001"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Optional: local Ollama for embeddings/LLM (heavy, 8GB). For free VPS, comment out and use Groq/HF API via OLLAMA_HOST
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: snip_ollama
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   ports:
+  #     - "11434:11434"
+  #   restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE: ${VITE_API_BASE:-https://snip.pp.ua}
+    container_name: snip_frontend
+    ports:
+      - "5173:80"
+    depends_on: [backend]
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: snip_caddy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [backend, frontend]
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
+  # ollama_data:

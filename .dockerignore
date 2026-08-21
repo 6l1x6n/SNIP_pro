@@ -1,0 +1,12 @@
+.git
+.gitignore
+node_modules
+dist
+__pycache__
+*.pyc
+.venv
+venv
+.DS_Store
+storage/pdfs/*.pdf
+*.log
+.env
