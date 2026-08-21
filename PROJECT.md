@@ -125,7 +125,14 @@ SNIP_pro/
 
 ## 7. Деплой — где и как
 
-### Текущий деплой (фронт, 21.08.2026)
+### Текущий деплой (22.08.2026) — 0₸ без карты
+* **Фронт:** Cloudflare Pages `https://snippy-llm.pages.dev` (wrangler CLI, бандл с `VITE_API_BASE=https://snip-backend-m21d.onrender.com`)
+* **Бэк:** Render Free `https://snip-backend-m21d.onrender.com` (Blueprint `render.yaml`, Docker `backend/Dockerfile`, Frankfurt, health `/api/health`); free-инстанс спит через 15 мин → keep-alive `.github/workflows/keepalive.yml` пинг каждые 10 мин
+* **БД:** Neon Free eu-central-1, pgvector, **direct-эндпоинт** (`-pooler` ломает интроспекцию типов asyncpg → InvalidCachedStatementError), пул 5+10
+* **Эмбеддинги:** Gemini API `gemini-embedding-001` 768d, free tier (`EMBEDDING_PROVIDER=gemini`); локальный fallback fastembed ONNX MiniLM 384d; torch/sentence-transformers убраны → RAM ~144MB
+* **Квоты в проде:** `QUOTA_ENABLED=1` anon 30/day registered 200/day
+
+### Старый деплой (фронт, 21.08.2026)
 * **Git:** `https://github.com/6l1x6n/SNIP_pro` `master` `538f202` (зеркало `deepseekpowered/www` `e29fd92` — пуш туда `403` нет прав, новый `origin2` `6l1x6n/SNIP_pro`)
 * **Фронт Cloudflare Pages:** `https://snippy-llm.pages.dev` (прод) + `https://f7614645.snippy-llm.pages.dev` (деплоя `f7614645-80e2-419c` `master` `538f202` `Project prod`), проект `snippy-llm` `frontend/wrangler.toml:5`, билд `npm install && npm run build` `frontend/package.json:8` `tsc -b && vite 368kB`, `Root: frontend`, `Output: dist`, `_redirects /* /index.html 200`, команда `npx wrangler pages deploy frontend/dist --project-name snippy-llm --branch master --commit-dirty=true` (локально `wrangler 4.125`)
 * **Статус:** фронт без бэка — `/api/search` `fetch API_BASE` `frontend/src/utils/api.ts:5` `VITE_API_BASE || http://localhost:8001` → в проде уходит на `localhost` и падает (нужен `VITE_API_BASE=https://<render>.onrender.com` в Pages Env)
@@ -163,14 +170,14 @@ SNIP_pro/
 
 | Var | Значение (прод Pages) | Где |
 |---|---|---|
-| `POSTGRES_USER/PASSWORD/DB` | `snip / bYbJ... / snip_pro` | `docker-compose.yml:6` |
+| `POSTGRES_USER/PASSWORD/DB` | локальный compose-доступ (значения только в `.env`, не в git) | `docker-compose.yml:6` |
 | `SECRET_KEY` | `openssl rand -hex 32` `4d063f...` | `backend/app/config.py:43` HS256 |
 | `DATABASE_URL` | `postgresql+asyncpg://snip:...@db:5432/snip_pro` (compose) / `Neon` для Render | `backend/app/core/db.py:6` |
 | `CORS_ORIGINS` | `https://snippy-llm.pages.dev,https://snippy-llm.workers.dev,http://localhost:5173,https://*.pages.dev,https://*.workers.dev,https://*.onrender.com` | `backend/app/main.py:137` `allow_origin_regex` |
 | `VITE_API_BASE` | `https://<render>.onrender.com` (Pages → Env) | `frontend/Dockerfile:7` `ARG` (вшивается) / `frontend/src/utils/api.ts:5` |
 | `EMBEDDING_MODEL` | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` 384d | `backend/app/config.py:14` |
 | `OLLAMA_HOST` | `https://api.groq.com/openai/v1` | `backend/app/llm/provider.py:25` `groq.com` check |
-| `GROQ_API_KEY` | `gsk_VpTujd4QBbz...` `console.groq.com/keys` | `backend/.env:11` |
+| `GROQ_API_KEY` | (секрет, только в `.env`/Render env — из git удалён) `console.groq.com/keys` | `backend/.env:11` |
 | `GROQ_MODEL` | `qwen/qwen3.6-27b` (был `llama-3.1-8b-instant` decommissioned) | `backend/app/config.py:19` |
 | `QUOTA_ENABLED` | `0` безлимит `1` вкл | `backend/app/core/quota.py:31` |
 | `DISABLE_DB` | `0` с PG `1` мок без БД (Pages) | `backend/app/core/db.py:6` `backend/app/main.py:24` |
