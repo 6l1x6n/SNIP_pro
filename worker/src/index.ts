@@ -22,7 +22,7 @@ const CORS_HEADERS = (env: Env, origin: string | null): Record<string, string> =
   const ok = origin && (allowed.includes(origin) || allowed.some((a) => a.endsWith("*") && origin.startsWith(a.slice(0, -1))));
   return {
     "Access-Control-Allow-Origin": ok ? origin! : allowed[0] ?? "*",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Device-Id",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Max-Age": "86400",
   };
