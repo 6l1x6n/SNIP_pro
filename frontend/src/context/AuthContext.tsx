@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react'
-import { API_BASE, DEVICE_ID } from '../utils/api'
+import { WORKER_BASE, DEVICE_ID } from '../utils/api'
 
 type User = {
   id: string
@@ -29,10 +29,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const fetchMe = async (tok: string) => {
     try {
-      const r = await fetch(`${API_BASE}/api/auth/me`, { headers: { Authorization: `Bearer ${tok}`, 'X-Device-Id': DEVICE_ID } })
+      const r = await fetch(`${WORKER_BASE}/api/me`, { headers: { Authorization: `Bearer ${tok}`, 'X-Device-Id': DEVICE_ID } })
       if (!r.ok) throw new Error('me failed')
-      const u = await r.json()
-      setUser(u)
+      const d = await r.json()
+      setUser({ id: d.uid, email: d.email, is_superuser: false, is_active: true, is_verified: true })
     } catch (e) {
       // сеть недоступна — не разлогиниваем, просто оставляем токен, пользователь попробует позже
       if (e instanceof TypeError) {
@@ -54,49 +54,41 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const login = async (email: string, password: string) => {
-    const form = new URLSearchParams()
-    form.set('username', email)
-    form.set('password', password)
     let r: Response
     try {
-      r = await fetch(`${API_BASE}/api/auth/login`, {
+      r = await fetch(`${WORKER_BASE}/api/auth/login`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Device-Id': DEVICE_ID },
-        body: form.toString(),
+        headers: { 'Content-Type': 'application/json', 'X-Device-Id': DEVICE_ID },
+        body: JSON.stringify({ email, password }),
       })
     } catch (e) {
-      if (e instanceof TypeError) throw new Error('Не удалось соединиться с сервером. Проверьте интернет и что бэкенд доступен: ' + API_BASE)
+      if (e instanceof TypeError) throw new Error('Не удалось соединиться с сервером: ' + WORKER_BASE)
       throw e
     }
-    if (!r.ok) {
-      const txt = await r.text()
-      throw new Error(txt || 'Login failed')
-    }
-    const data = await r.json()
-    const tok = data.access_token as string
-    localStorage.setItem('snip_token', tok)
-    setToken(tok)
-    setUser(data.user)
+    const data = await r.json().catch(() => ({}) as any)
+    if (!r.ok) throw new Error(data.error || 'Login failed')
+    localStorage.setItem('snip_token', data.token)
+    setToken(data.token)
+    setUser({ id: data.uid, email: data.email, is_superuser: false, is_active: true, is_verified: true })
   }
 
   const register = async (email: string, password: string, full_name?: string) => {
     let r: Response
     try {
-      r = await fetch(`${API_BASE}/api/auth/register`, {
+      r = await fetch(`${WORKER_BASE}/api/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Device-Id': DEVICE_ID },
         body: JSON.stringify({ email, password, full_name }),
       })
     } catch (e) {
-      if (e instanceof TypeError) throw new Error('Не удалось соединиться с сервером. Проверьте интернет и что бэкенд доступен: ' + API_BASE)
+      if (e instanceof TypeError) throw new Error('Не удалось соединиться с сервером: ' + WORKER_BASE)
       throw e
     }
-    if (!r.ok) {
-      const txt = await r.text()
-      throw new Error(txt || 'Register failed')
-    }
-    // auto login
-    await login(email, password)
+    const data = await r.json().catch(() => ({}) as any)
+    if (!r.ok) throw new Error(data.error || 'Register failed')
+    localStorage.setItem('snip_token', data.token)
+    setToken(data.token)
+    setUser({ id: data.uid, email: data.email, is_superuser: false, is_active: true, is_verified: true })
   }
 
   const logout = () => {

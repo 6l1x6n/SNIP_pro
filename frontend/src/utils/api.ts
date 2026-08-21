@@ -2,9 +2,11 @@
  * Shared API configuration, device ID, and authFetch wrapper.
  */
 
-export const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? '' : 'http://localhost:8001')
+// CF Worker: auth + кредиты + /ask + /embed
+export const WORKER_BASE = import.meta.env.VITE_WORKER_BASE || import.meta.env.VITE_API_BASE || ''
+export const API_BASE = WORKER_BASE
 
-// ── Device ID (for anonymous quota tracking) ──
+// ── Device ID (for anonymous credits tracking) ──
 const DEVICE_ID_KEY = 'snip_device_id'
 
 function getOrCreateDeviceId(): string {
@@ -22,7 +24,7 @@ function getOrCreateDeviceId(): string {
 export const DEVICE_ID = getOrCreateDeviceId()
 
 /**
- * Authenticated fetch wrapper. Sends X-Device-Id for quota tracking.
+ * Authenticated fetch to the Worker. Sends JWT + X-Device-Id.
  */
 export async function authFetch(input: RequestInfo, init: RequestInit = {}): Promise<Response> {
   const headers: Record<string, string> = { ...(init.headers as Record<string, string> || {}) }

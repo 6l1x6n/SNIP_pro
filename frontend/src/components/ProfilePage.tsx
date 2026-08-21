@@ -72,7 +72,7 @@ export function ProfilePage({ stats, onLogout, highlightPalette, setHighlightPal
   setMonoHex?: (v:string)=>void,
   initialSection?: string | null,
 }) {
-  const { user, logout, authFetch } = useAuth()
+  const { user, logout } = useAuth()
   const { baskets, assignments, retentionDays, setRetentionDays } = useBaskets() as any
   const [section, setSection] = useState<SectionId>((initialSection as SectionId) || 'overview')
 
@@ -82,13 +82,13 @@ export function ProfilePage({ stats, onLogout, highlightPalette, setHighlightPal
   }, [initialSection])
   const [showToken, setShowToken] = useState(false)
   const [token, setToken] = useState<string | null>(()=>{ try{ return localStorage.getItem('snip_token')}catch{return null}})
-  const [members, setMembers] = useState<any[]>([])
-  const [membersLoading, setMembersLoading] = useState(false)
+  const [members] = useState<any[]>([])
+  const [membersLoading] = useState(false)
   const [membersError, setMembersError] = useState<string|null>(null)
 
   // --- Real API key state ---
   const [apiKey, setApiKey] = useState<string | null>(null)
-  const [apiKeyLoading, setApiKeyLoading] = useState(false)
+  const [apiKeyLoading] = useState(false)
   const [apiKeyError, setApiKeyError] = useState<string | null>(null)
   const [showApiKey, setShowApiKey] = useState(false)
 
@@ -96,42 +96,22 @@ export function ProfilePage({ stats, onLogout, highlightPalette, setHighlightPal
   const [quickExamples, setQuickExamples] = useState<string[]>(() => loadQuickExamples())
 
   const loadApiKey = useCallback(async () => {
-    setApiKeyLoading(true); setApiKeyError(null)
-    try {
-      const r = await authFetch(`${API_BASE}/api/auth/api-key`)
-      if (!r.ok) throw new Error(await r.text())
-      const data = await r.json()
-      setApiKey(data.api_key)
-    } catch (e: any) {
-      setApiKeyError(e?.message || 'Нет доступа к API-ключу')
-    } finally {
-      setApiKeyLoading(false)
-    }
-  }, [authFetch])
+    // API-ключи отключены вместе с бэкендом — поиск работает без ключей
+    setApiKey(null)
+    setApiKeyError('API-ключи больше не нужны: пользуйтесь поиском на сайте')
+  }, [])
 
   const regenerateApiKey = async () => {
-    try {
-      const r = await authFetch(`${API_BASE}/api/auth/api-key/regenerate`, { method: 'POST' })
-      if (!r.ok) throw new Error(await r.text())
-      const data = await r.json()
-      setApiKey(data.api_key)
-      setShowApiKey(true)
-    } catch (e: any) {
-      setApiKeyError(e?.message || 'Не удалось сгенерировать ключ')
-    }
+    setApiKeyError('API-ключи больше не поддерживаются')
   }
 
   useEffect(()=>{
     if(!user) return
     if(section==='members'){
-      setMembersLoading(true); setMembersError(null)
-      authFetch(`${API_BASE}/api/auth/users`).then(async r=>{
-        if(!r.ok) throw new Error(await r.text())
-        const data = await r.json()
-        setMembers(data)
-      }).catch(e=> setMembersError(e.message || 'Нет доступа (только superuser)')).finally(()=>setMembersLoading(false))
+      // список пользователей недоступен без сервера
+      setMembersError('Раздел участников отключён')
     }
-  }, [section, user, authFetch])
+  }, [section, user])
 
   useEffect(()=>{
     try{ setToken(localStorage.getItem('snip_token')) }catch{}

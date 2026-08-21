@@ -1,6 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react'
-import { useAuth } from './AuthContext'
-import { API_BASE } from '../utils/api'
+import React, { createContext, useContext, useEffect, useState, useCallback } from 'react'
 
 const LS_KEY = 'snip_pinned_v1'
 
@@ -61,14 +59,13 @@ function saveLS(items: PinnedItem[]) {
 }
 
 export function PinnedProvider({ children }: { children: React.ReactNode }) {
-  const { user, authFetch } = useAuth()
+  // Закладки живут только в localStorage — бэкенд для них не нужен
   const [items, setItems] = useState<PinnedItem[]>(() => loadLS())
   const [docsTabRef, setDocsTabRefState] = useState<React.RefObject<HTMLButtonElement | null> | null>(null)
   const [pinnedButtonRef, setPinnedButtonRefState] = useState<React.RefObject<HTMLButtonElement | null> | null>(null)
   const [flyTrigger, setFlyTrigger] = useState(0)
   const [lastFlyFrom, setLastFlyFrom] = useState<DOMRect | null>(null)
   const [lastFlyTarget, setLastFlyTarget] = useState<'pins'|'docs'>('pins')
-  const syncedRef = useRef(false)
 
   const setDocsTabRef = useCallback((r: React.RefObject<HTMLButtonElement | null>) => {
     setDocsTabRefState(r as any)
@@ -79,54 +76,6 @@ export function PinnedProvider({ children }: { children: React.ReactNode }) {
 
   // persist to LS on change
   useEffect(() => { saveLS(items) }, [items])
-
-  // fetch from backend when user logs in
-  useEffect(() => {
-    if (!user) {
-      syncedRef.current = false
-      return
-    }
-    if (syncedRef.current) return
-    let cancelled = false
-    const sync = async () => {
-      try {
-        const r = await authFetch(`${API_BASE}/api/pins`)
-        if (!r.ok) return
-        const data = await r.json() as any[]
-        if (cancelled) return
-        const remote: PinnedItem[] = data.map((d: any) => ({
-          document_id: d.document_id,
-          number: d.number,
-          title: d.title,
-          type: d.type,
-          status: d.status,
-          pages: d.pages,
-          source_url: d.source_url,
-          pinned_at: d.pinned_at,
-        }))
-        // merge: remote wins, keep local-only that not in remote (chunk pins always local)
-        setItems(prev => {
-          const remoteIds = new Set(remote.map(x => x.document_id))
-          const localOnly = prev.filter(p => {
-            if ((p.kind||'doc')==='chunk') return true
-            return !remoteIds.has(p.document_id)
-          })
-          if (localOnly.length) {
-            localOnly.filter(lo=> (lo.kind||'doc')==='doc' && !lo.document_id.startsWith('local:')).forEach(async lo => {
-              try { await authFetch(`${API_BASE}/api/pins`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ document_id: lo.document_id }) }) } catch {}
-            })
-          }
-          const merged = [...remote, ...localOnly]
-          // sort by pinned_at desc
-          merged.sort((a, b) => new Date(b.pinned_at).getTime() - new Date(a.pinned_at).getTime())
-          return merged.slice(0, 50)
-        })
-        syncedRef.current = true
-      } catch {}
-    }
-    sync()
-    return () => { cancelled = true }
-  }, [user, authFetch])
 
   const isPinned = useCallback((docId: string) => items.some(i => (i.kind||'doc')==='doc' && i.document_id === docId), [items])
   const isPinnedChunk = useCallback((chunkId: string) => items.some(i => i.kind==='chunk' && i.chunk_id === chunkId), [items])
@@ -157,13 +106,7 @@ export function PinnedProvider({ children }: { children: React.ReactNode }) {
       return [next, ...prev]
     })
     triggerFly(anchorRect || null, 'pins')
-    if (kind!=='chunk') {
-      const isLocal = item.document_id.startsWith('local:')
-      if (user && !isLocal) {
-        authFetch(`${API_BASE}/api/pins`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ document_id: item.document_id }) }).catch(() => {})
-      }
-    }
-  }, [user, authFetch, triggerFly])
+  }, [triggerFly])
 
   const toggleChunk = useCallback((item: Omit<PinnedItem, 'pinned_at'>, anchorRect?: DOMRect | null) => {
     const chunkId = item.chunk_id
@@ -203,11 +146,7 @@ export function PinnedProvider({ children }: { children: React.ReactNode }) {
 
   const remove = useCallback((docId: string) => {
     setItems(prev => prev.filter(p => !((p.kind||'doc')==='doc' && p.document_id === docId)))
-    const isLocal = docId.startsWith('local:')
-    if (user && !isLocal) {
-      authFetch(`${API_BASE}/api/pins/${docId}`, { method: 'DELETE' }).catch(() => {})
-    }
-  }, [user, authFetch])
+  }, [])
 
   const toggle = useCallback((item: Omit<PinnedItem, 'pinned_at'>, anchorRect?: DOMRect | null) => {
     const kind = (item.kind as string) || 'doc'
@@ -215,19 +154,15 @@ export function PinnedProvider({ children }: { children: React.ReactNode }) {
     setItems(prev => {
       const exists = prev.some(p => (p.kind||'doc')==='doc' && p.document_id === item.document_id)
       if (exists) {
-        const isLocal = item.document_id.startsWith('local:')
-        if (user && !isLocal) authFetch(`${API_BASE}/api/pins/${item.document_id}`, { method: 'DELETE' }).catch(() => {})
         return prev.filter(p => !((p.kind||'doc')==='doc' && p.document_id === item.document_id))
       } else {
         if (prev.length >= 50) return prev
         triggerFly(anchorRect || null, 'pins')
-        const isLocal = item.document_id.startsWith('local:')
-        if (user && !isLocal) authFetch(`${API_BASE}/api/pins`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ document_id: item.document_id }) }).catch(() => {})
         const next: PinnedItem = { ...item, kind: 'doc' as any, pinned_at: new Date().toISOString() }
         return [next, ...prev]
       }
     })
-  }, [user, authFetch, triggerFly, toggleChunk] as any)
+  }, [triggerFly, toggleChunk] as any)
 
   const reorder = useCallback((from: number, to: number) => {
     setItems(prev => {
@@ -241,8 +176,7 @@ export function PinnedProvider({ children }: { children: React.ReactNode }) {
 
   const clear = useCallback(() => {
     setItems([])
-    if (user) authFetch(`${API_BASE}/api/pins`, { method: 'DELETE' }).catch(() => {})
-  }, [user, authFetch])
+  }, [])
 
   return (
     <Ctx.Provider value={{ items, isPinned, isPinnedChunk, toggle, toggleChunk, add, addLocalFile, remove, removeChunk, clear, reorder, count: items.length, docsTabRef, setDocsTabRef, pinnedButtonRef, setPinnedButtonRef, flyTrigger, lastFlyFrom, lastFlyTarget } as any}>

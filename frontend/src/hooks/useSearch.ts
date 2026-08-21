@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from 'react'
-import { API_BASE, authFetch } from '../utils/api'
+import { hybridSearchLegacy, askAI } from '../search/searchClient'
 
 export type SearchResult = {
   chunk_id: string
@@ -70,7 +70,6 @@ export function useSearch(_opts: UseSearchOptions) {
   const doSearch = useCallback(async (q: string = query) => {
     const trimmed = q.trim()
     if (!trimmed) return
-    // abort previous in-flight request to prevent race
     if (abortRef.current) {
       try { abortRef.current.abort() } catch {}
     }
@@ -88,33 +87,50 @@ export function useSearch(_opts: UseSearchOptions) {
     setLoading(true)
     setError(null)
 
-    const filters: Record<string, string> = {}
-    if (filterType) filters.type = filterType
-    if (filterStatus) filters.status = filterStatus
-
     try {
-      const r = await authFetch(`${API_BASE}/api/search`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          query: q,
-          mode,
-          top_k: mode === 'deep' ? 20 : 10,
-          filters: Object.keys(filters).length ? filters : undefined,
-        }),
-        signal: ctrl.signal as any,
-      })
-      if (r.status === 429) {
-        const body = await r.json().catch(() => ({}))
-        const msg = body.detail?.message || body.message || 'Лимит запросов исчерпан. Зарегистрируйтесь чтобы продолжить.'
-        setQuotaExceeded(true)
-        setError(msg)
-        return
+      // 1. Гибридный поиск — целиком в браузере (бесплатно)
+      const { results: allResults, took_ms, weak } = await hybridSearchLegacy(trimmed, mode, mode === 'deep' ? 20 : 10)
+
+      // фильтры клиента по документам
+      let results = allResults
+      if (filterStatus && filterStatus !== 'all') {
+        results = results.filter(r => r.status === filterStatus)
       }
-      if (!r.ok) throw new Error(await r.text())
-      const data: SearchResponse = await r.json()
-      // only set if not aborted
-      if (!ctrl.signal.aborted) setResp(data)
+      if (filterType) {
+        results = results.filter(r => r.document_number.toUpperCase().startsWith(filterType.toUpperCase()))
+      }
+
+      const respBase: SearchResponse = {
+        query: trimmed,
+        mode,
+        results,
+        took_ms,
+        total_found: results.length,
+        message: weak && !results.length
+          ? 'В доступной нормативной базе точного требования не найдено.'
+          : undefined,
+      }
+
+      if (!ctrl.signal.aborted) setResp(respBase)
+
+      // 2. ИИ-ответ — Worker /ask со списанием кредитов (только если есть результаты)
+      if (results.length && !weak && !ctrl.signal.aborted) {
+        try {
+          const ask = await askAI(trimmed, mode, results.slice(0, 5).map(r => r.chunk_id))
+          if (!ctrl.signal.aborted) {
+            setResp({ ...respBase, answer: ask.answer })
+          }
+        } catch (e: any) {
+          if (e?.quotaExceeded) {
+            if (!ctrl.signal.aborted) {
+              setQuotaExceeded(true)
+              setError(e.message)
+            }
+            return
+          }
+          console.warn('ask failed', e)
+        }
+      }
     } catch (e: any) {
       if (e?.name === 'AbortError') return
       setError(e.message || 'Ошибка поиска')

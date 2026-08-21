@@ -1,0 +1,13 @@
+{
+ "version": 1,
+ "builtAt": "2026-08-21T22:57:48Z",
+ "dim": 768,
+ "count": 11,
+ "quantization": "int8-per-vector",
+ "model": "gemini-embedding-001",
+ "bm25": {
+  "k1": 1.2,
+  "b": 0.75
+ },
+ "rrfK": 60
+}

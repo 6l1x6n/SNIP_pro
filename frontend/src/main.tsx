@@ -7,6 +7,10 @@ import { PinnedProvider } from './context/PinnedContext.tsx'
 import { BasketProvider } from './context/BasketContext.tsx'
 import { ToastProvider } from './components/Toast.tsx'
 import { ThemeProvider } from './context/ThemeContext.tsx'
+import { initSearchClient } from './search/searchClient'
+
+// индекс поиска грузим в фоне сразу
+initSearchClient()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

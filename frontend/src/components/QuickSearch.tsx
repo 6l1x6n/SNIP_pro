@@ -33,13 +33,13 @@ export function QuickSearch({ open, onClose, onSearch }: QuickSearchProps) {
     }
   }, [open])
 
-  // Fetch document suggestions as user types
+  // Fetch document suggestions as user types (static index)
   useEffect(() => {
     if (!open || query.length < 2) { setSuggestions([]); return }
     const t = setTimeout(async () => {
       try {
         setLoading(true)
-        const r = await authFetch(`${API_BASE}/api/documents?limit=5`)
+        const r = await fetch('/index/docs.json')
         const docs = await r.json()
         const q = query.toLowerCase()
         setSuggestions(

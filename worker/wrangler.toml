@@ -1,0 +1,20 @@
+name = "snip-worker"
+main = "src/index.ts"
+compatibility_date = "2026-01-15"
+
+# D1: создай командой `npx wrangler d1 create snip-db` и вставь database_id ниже
+[[d1_databases]]
+binding = "DB"
+database_name = "snip-db"
+database_id = "PLACEHOLDER_RUN_WRANGLER_D1_CREATE"
+
+[vars]
+GROQ_MODEL = "qwen/qwen3.6-27b"
+EMBED_MODEL = "gemini-embedding-001"
+INDEX_BASE_URL = "https://snippy-llm.pages.dev/index"
+ALLOWED_ORIGINS = "https://snippy-llm.pages.dev,https://*.pages.dev,http://localhost:5173"
+CREDITS_ANON = "30"
+CREDITS_USER = "50"
+ASK_COST = "10"
+
+# Секреты (не в git): npx wrangler secret put JWT_SECRET / GROQ_API_KEY / GEMINI_API_KEY

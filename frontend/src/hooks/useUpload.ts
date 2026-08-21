@@ -1,5 +1,4 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
-import { API_BASE, authFetch } from '../utils/api'
 import { isPdf } from '../utils/fileType'
 import type { DropStatus } from '../components/SnakeState'
 
@@ -12,21 +11,9 @@ interface UseUploadOptions {
   loadCollector: () => void
 }
 
-function parseUploadError(raw: string): string {
-  try {
-    const j = JSON.parse(raw)
-    if (j.detail) {
-      if (String(j.detail).includes('Only PDF')) return 'Можно только PDF — перетащите .pdf файл'
-      return String(j.detail)
-    }
-  } catch {}
-  if (raw.includes('Only PDF')) return 'Можно только PDF'
-  return raw.slice(0, 200)
-}
-
-export function useUpload({ user, activeBasketId, addLocalFiles, showToast, loadDocs, loadCollector }: UseUploadOptions) {
+export function useUpload({ addLocalFiles, showToast }: UseUploadOptions) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [uploading, setUploading] = useState(false)
+  const [uploading] = useState(false)
   const [uploadMsg, setUploadMsg] = useState<string | null>(null)
   const [dropStatus, setDropStatus] = useState<DropStatus>('idle')
   const [dropMessage, setDropMessage] = useState<string | null>(null)
@@ -47,37 +34,12 @@ export function useUpload({ user, activeBasketId, addLocalFiles, showToast, load
     setTimeout(() => timers.current.delete(t), delay + 100)
   }, [])
 
-  const handleUpload = useCallback(async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const form = e.currentTarget
-    const fd = new FormData(form)
-    if (selectedFile && !fd.get('file')) fd.set('file', selectedFile)
-    if (!fd.get('file')) {
-      setUploadMsg('Ошибка: выберите PDF файл')
-      setDropStatus('error'); setDropMessage('Выберите PDF — до 100 МБ')
-      clearDrop(2500)
-      return
-    }
-    setUploading(true); setDropStatus('uploading'); setDropMessage(null); setUploadMsg(null)
-    try {
-      const r = await authFetch(`${API_BASE}/api/admin/documents/upload`, { method: 'POST', body: fd })
-      if (!r.ok) throw new Error(parseUploadError(await r.text()))
-      const data = await r.json()
-      setUploadMsg(`Успешно загружен: ${data.number} (${data.document_id})`)
-      setDropStatus('success'); setDropMessage(`${data.number} — проиндексирован`)
-      setSelectedFile(null)
-      if (fileInputRef.current) fileInputRef.current.value = ''
-      form.reset()
-      loadDocs()
-      loadCollector()
-      clearDrop(2500)
-    } catch (err: any) {
-      const msg = parseUploadError(err.message || 'Ошибка')
-      setUploadMsg(`Ошибка: ${msg}`)
-      setDropStatus('error'); setDropMessage(msg)
-      clearDrop(3000)
-    } finally { setUploading(false) }
-  }, [selectedFile, authFetch, loadDocs, loadCollector, clearDrop])
+  const handleUpload = useCallback(async (_e: React.FormEvent<HTMLFormElement>) => {
+    // Загрузка документов отключена: SNiP — фиксированный пакет, обновление через пересборку индекса
+    setUploadMsg('Загрузка отключена: справочник обновляется вместе с пакетом норм')
+    setDropStatus('error'); setDropMessage('Функция загрузки PDF отключена')
+    clearDrop(3000)
+  }, [clearDrop])
 
   const onDropFile = useCallback((f: File) => {
     if (!isPdf(f)) {
@@ -108,44 +70,13 @@ export function useUpload({ user, activeBasketId, addLocalFiles, showToast, load
     }
     if (!pdfs.length) return
 
-    if (!user) {
-      const ids = addLocalFiles(pdfs, targetBasketId)
-      setUploadMsg(`Локально добавлено ${ids.length} PDF`)
-      setDropStatus('success'); setDropMessage(`Локально ${ids.length} файл(ов)`)
-      showToast(`Локально ${ids.length} PDF до перезагрузки — войдите чтобы сохранить`, 'warning')
-      clearDrop(3000)
-      return
-    }
-
-    for (let i = 0; i < pdfs.length; i++) {
-      const f = pdfs[i]
-      if (f.size > 100 * 1024 * 1024) {
-        setUploadMsg(`Пропущен >100 МБ: ${f.name}`)
-        setDropStatus('error'); setDropMessage('Файл >100 МБ')
-        continue
-      }
-      setUploading(true); setDropStatus('uploading'); setDropMessage(`Загружаю ${i + 1}/${pdfs.length}: ${f.name.slice(0, 30)}`)
-      try {
-        const fd = new FormData()
-        fd.set('file', f)
-        const r = await authFetch(`${API_BASE}/api/admin/documents/upload`, { method: 'POST', body: fd })
-        if (!r.ok) throw new Error(parseUploadError(await r.text()))
-        const data = await r.json()
-        window.dispatchEvent(new CustomEvent('snip:basket-move', { detail: { docId: data.document_id, basketId: targetBasketId ?? activeBasketId } }))
-        setDropStatus('success'); setDropMessage(`Загружен ${i + 1}/${pdfs.length}: ${data.number}`)
-        showToast(`Загружен ${i + 1}/${pdfs.length}: ${data.number}`, 'success')
-        window.dispatchEvent(new Event('snip:reload-docs'))
-      } catch (e: any) {
-        addLocalFiles([f], targetBasketId)
-        const em = parseUploadError(e.message)
-        setDropStatus('error'); setDropMessage(`«${f.name}» локально — ${em}`)
-        showToast(`Локально: ${f.name} — ${em}`, 'warning')
-      } finally { setUploading(false) }
-      await new Promise(r => setTimeout(r, 300))
-    }
-    clearDrop(2500)
-    loadDocs()
-  }, [user, authFetch, activeBasketId, addLocalFiles, showToast, loadDocs, clearDrop])
+    // Загрузка на сервер отключена — PDF из корзины остаются локальными
+    const ids = addLocalFiles(pdfs, targetBasketId)
+    setUploadMsg(`Локально добавлено ${ids.length} PDF`)
+    setDropStatus('success'); setDropMessage(`Локально ${ids.length} файл(ов)`)
+    showToast(`Загрузка на сервер отключена: ${ids.length} PDF добавлены локально`, 'warning')
+    clearDrop(3000)
+  }, [addLocalFiles, showToast, clearDrop])
 
   return {
     selectedFile, setSelectedFile,

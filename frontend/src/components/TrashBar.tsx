@@ -1,15 +1,12 @@
 import { useState } from 'react'
 import { useBaskets } from '../context/BasketContext'
 import { usePinned } from '../context/PinnedContext'
-import { useAuth } from '../context/AuthContext'
 import { useToast } from './Toast'
 import { useConfirm, ConfirmDialog } from './ConfirmDialog'
-import { API_BASE } from '../utils/api'
 
 export function TrashBar() {
   const { isDragging, draggedDocId, setIsDragging, setDraggedDocId, removeLocalDoc } = useBaskets()
   const { remove } = usePinned()
-  const { authFetch } = useAuth()
   const { showToast } = useToast()
   const { confirm, handleConfirm, handleCancel, dialogState } = useConfirm()
   const [dragOver, setDragOver] = useState(false)
@@ -54,23 +51,10 @@ export function TrashBar() {
     }
     setDeleting(true)
     try {
-      const r = await authFetch(`${API_BASE}/api/admin/documents/${docId}`, { method: 'DELETE' })
-      if (!r.ok) {
-        const txt = await r.text()
-        let msg = txt
-        try { const j = JSON.parse(txt); if (j.detail) msg = j.detail } catch {}
-        if (msg.includes('Not found') && /^[0-9a-f-]{36}$/i.test(docId)) msg = 'Не найден документ (возможно, перетащили фрагмент, а не документ). Попробуйте перетащить карточку документа целиком.'
-        throw new Error(msg)
-      }
-      remove(docId)
-      window.dispatchEvent(new CustomEvent('snip:basket-move', { detail: { docId, basketId: null } }))
-      window.dispatchEvent(new Event('snip:reload-docs'))
-      showToast('Документ удалён', 'success')
+      // Удаление документов отключено: пакет норм фиксированный, уберите из корзины вместо этого
+      throw new Error('Документы пакета удалить нельзя — уберите из корзины')
     } catch (e: any) {
-      let msg = e.message || 'Ошибка'
-      if (msg.includes('Чужой документ')) msg = 'Это чужой личный документ — удалить может только владелец.'
-      if (msg.includes('Общий документ')) msg = 'Общий эталон — удалять может только владелец сайта (superuser). Уберите из корзины вместо удаления.'
-      showToast(`Не удалось удалить: ${msg}`, 'error', 5000)
+      showToast(e.message || 'Ошибка', 'error', 5000)
     } finally {
       setDeleting(false)
       setIsDragging(false); setDraggedDocId(null)

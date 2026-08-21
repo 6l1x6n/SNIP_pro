@@ -1,9 +1,7 @@
 /**
  * Shared PDF opening utility.
- * Opens a document PDF in a new tab, optionally at a specific page.
+ * PDF пакета раздаются статикой из /norms/ (frontend/public/norms).
  */
-import { API_BASE, authFetch } from './api'
-
 export async function openPdf(
   docId: string,
   page?: number | null,
@@ -14,22 +12,16 @@ export async function openPdf(
     return
   }
   try {
-    const r = await authFetch(`${API_BASE}/api/documents/${docId}/pdf`)
-    if (!r.ok) {
-      const txt = await r.text()
-      let msg = txt.slice(0, 160)
-      try {
-        const j = JSON.parse(txt)
-        if (j.detail) msg = j.detail
-      } catch {}
-      onError?.(`Не удалось открыть PDF: ${msg}`)
+    const r = await fetch('/index/docs.json')
+    const docs: Array<{ id: string; file: string; number: string }> = await r.json()
+    const doc = docs.find((d) => d.id === String(docId))
+    if (!doc?.file) {
+      onError?.(`PDF для ${doc?.number ?? docId} не найден в пакете`)
       return
     }
-    const blob = await r.blob()
-    const url = URL.createObjectURL(blob)
-    const win = window.open(`${url}${page ? `#page=${page}` : ''}`, '_blank')
+    const url = encodeURI(`/norms/${doc.file}`) + (page ? `#page=${page}` : '')
+    const win = window.open(url, '_blank')
     if (!win) {
-      // fallback: download
       const a = document.createElement('a')
       a.href = url
       a.target = '_blank'
@@ -38,9 +30,6 @@ export async function openPdf(
       a.click()
       a.remove()
     }
-    setTimeout(() => {
-      try { URL.revokeObjectURL(url) } catch {}
-    }, 60_000)
   } catch (e: any) {
     onError?.(`Ошибка PDF: ${e.message || e}`)
   }

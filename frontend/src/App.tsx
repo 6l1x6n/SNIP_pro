@@ -105,9 +105,9 @@ export default function App() {
   }, [showToast])
 
   const triggerCollector = useCallback(async () => {
-    await authFetch(`${API_BASE}/api/admin/collector/run`, { method: 'POST' })
-    setTimeout(docs.loadCollector, 1500)
-  }, [authFetch, docs.loadCollector])
+    // Коллектор отключён: пакет норм фиксированный, обновление = пересборка индекса
+    docs.loadCollector()
+  }, [docs.loadCollector])
 
   // Listen for basket files event
   useEffect(() => {
