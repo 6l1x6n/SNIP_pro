@@ -21,6 +21,11 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 @router.post("/register", response_model=UserOut, status_code=201)
 @limiter.limit("5/hour")
 async def register(request: Request, data: UserCreate, db: AsyncSession = Depends(get_db)):
+    # open front без БД — логин не блокирует просмотр, но регистрация требует БД
+    import os as _os
+    from app.config import settings as _s
+    if _os.getenv("DISABLE_DB", "0") == "1" or getattr(_s, "disable_db", False) or db is None:
+        raise HTTPException(503, "База данных отключена (DISABLE_DB=1) — регистрация недоступна. Подключите Postgres или используйте локально.")
     email = data.email.lower().strip()
     if not EMAIL_RE.match(email):
         raise HTTPException(400, "Invalid email")
@@ -58,6 +63,10 @@ async def register(request: Request, data: UserCreate, db: AsyncSession = Depend
 @router.post("/login", response_model=Token)
 @limiter.limit("10/minute")
 async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)):
+    import os as _os
+    from app.config import settings as _s
+    if _os.getenv("DISABLE_DB", "0") == "1" or getattr(_s, "disable_db", False) or db is None:
+        raise HTTPException(503, "База данных отключена — вход недоступен. Подключите Postgres.")
     # OAuth2PasswordRequestForm uses username field as email
     email = form_data.username.lower().strip()
     res = await db.execute(select(User).where(User.email == email))
@@ -75,6 +84,10 @@ async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends
 @router.post("/login-json", response_model=Token)
 @limiter.limit("10/minute")
 async def login_json(request: Request, data: UserLogin, db: AsyncSession = Depends(get_db)):
+    import os as _os
+    from app.config import settings as _s
+    if _os.getenv("DISABLE_DB", "0") == "1" or getattr(_s, "disable_db", False) or db is None:
+        raise HTTPException(503, "База данных отключена — вход недоступен.")
     email = data.email.lower().strip()
     res = await db.execute(select(User).where(User.email == email))
     user = res.scalar_one_or_none()

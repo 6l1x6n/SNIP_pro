@@ -13,7 +13,18 @@ interface ProfileViewProps {
 }
 
 export function ProfileView({ stats, onLogout, highlightPalette, setHighlightPalette, monoHex, setMonoHex, user, initialSection }: ProfileViewProps) {
-  if (!user) return null
+  if (!user) {
+    return (
+      <main className="flex-1 max-w-5xl mx-auto w-full px-4 py-6">
+        <div className="max-w-md mx-auto bg-white rounded-2xl border border-slate-200 p-6 shadow-lg text-center">
+          <img src="/logo-64.png" alt="snippy.llm" className="w-12 h-12 mx-auto rounded-xl object-cover border border-slate-200 bg-white" />
+          <h3 className="font-semibold text-slate-900 mt-3">Профиль — войдите</h3>
+          <p className="text-xs text-slate-500 mt-1">Документы и поиск работают без входа. Войдите чтобы видеть профиль, ключи и статистику.</p>
+          <div className="mt-4 text-xs text-slate-400">Нажмите «Войти» в шапке</div>
+        </div>
+      </main>
+    )
+  }
   return (
     <main className="flex-1 max-w-6xl mx-auto w-full px-4 py-6">
       <ProfilePage

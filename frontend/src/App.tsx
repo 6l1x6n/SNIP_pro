@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useAuth } from './context/AuthContext'
 import { LoginForm, RegisterForm } from './components/AuthForms'
+import { API_BASE } from './utils/api'
 import { usePinned } from './context/PinnedContext'
 import { useBaskets } from './context/BasketContext'
 import { PinnedDropdown } from './components/PinnedDropdown'
@@ -104,7 +105,7 @@ export default function App() {
   }, [showToast])
 
   const triggerCollector = useCallback(async () => {
-    await authFetch(`/api/admin/collector/run`, { method: 'POST' })
+    await authFetch(`${API_BASE}/api/admin/collector/run`, { method: 'POST' })
     setTimeout(docs.loadCollector, 1500)
   }, [authFetch, docs.loadCollector])
 
@@ -185,7 +186,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* Auth modal */}
+      {/* Auth modal — только по клику Войти, не на всех вкладках */}
       {showAuth && !user && (
         <div className="bg-slate-50 border-b border-slate-200">
           <div className="max-w-6xl mx-auto px-4 py-6"><AuthGate /></div>

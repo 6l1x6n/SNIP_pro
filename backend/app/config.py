@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     app_name: str = "SNIP_pro - Интеллектуальный справочник СНиП РК"
     version: str = "0.1.0"
     debug: bool = True
-    cors_origins: str = "http://localhost:5173,http://localhost:3000,https://snip.pp.ua,https://www.snip.pp.ua,https://*.pages.dev,https://*.onrender.com"
+    cors_origins: str = "http://localhost:5173,http://localhost:3000,https://snippy-llm.pages.dev,https://*.pages.dev,https://snippy-llm.workers.dev,https://*.workers.dev,https://*.onrender.com"
 
     model_config = {"extra": "ignore", "env_file": str(BASE_DIR / ".env"), "env_file_encoding": "utf-8"}
 

@@ -4,7 +4,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
-ARG VITE_API_BASE=https://snip.pp.ua
+ARG VITE_API_BASE=https://snippy-llm.pages.dev
 ENV VITE_API_BASE=$VITE_API_BASE
 RUN npm run build
 

@@ -13,7 +13,7 @@ API_KEY_PREFIX = "sk-"
 
 async def _resolve_user(token: str | None, db: AsyncSession) -> User | None:
     """Resolve a user from either a JWT (Bearer) or a personal API key (sk-…)."""
-    if not token:
+    if not token or db is None:
         return None
     # 1) JWT bearer token
     payload = decode_token(token)

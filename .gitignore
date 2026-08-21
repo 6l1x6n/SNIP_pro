@@ -43,3 +43,7 @@ venv/
 pgdata/
 caddy_data/
 caddy_config/
+
+# Wrangler
+.wrangler/
+frontend/.wrangler/

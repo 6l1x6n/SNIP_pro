@@ -1,4 +1,4 @@
-snip.pp.ua, www.snip.pp.ua {
+:80 {
     handle /api/* {
         reverse_proxy backend:8001
     }
@@ -19,8 +19,4 @@ snip.pp.ua, www.snip.pp.ua {
     }
     encode zstd gzip
 }
-
-# Fallback for direct IP access (optional)
-:80 {
-    respond "SNIP.pro — use https://snip.pp.ua" 200
-}
+# Cloudflare Pages: https://snippy-llm.pages.dev / workers.dev — фронт отдельно, Caddy только для локального Docker

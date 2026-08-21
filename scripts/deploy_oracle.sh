@@ -27,6 +27,6 @@ docker compose up -d --build
 sleep 5
 docker compose ps
 curl -s http://localhost:8001/api/health | head -c 200; echo ""
-echo "✅ Done. Check https://snip.pp.ua/api/health"
+echo "✅ Done. Check https://snippy-llm.pages.dev/api/health and http://localhost:8001/api/health"
 EOS
 echo "Deploy finished"

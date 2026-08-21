@@ -232,8 +232,8 @@ export function SearchView(props: SearchViewProps) {
         </div>
 
         {!user && !loading && !resp && (
-          <div className="text-center py-6">
-            <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-amber-50 border border-amber-200 text-amber-700 text-xs">Войдите, чтобы искать — бесплатно, 1 клик</div>
+          <div className="text-center py-2">
+            <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-blue-50 border border-blue-200 text-blue-700 text-xs">Поиск доступен без входа — <button onClick={() => setShowAuth(true)} className="underline font-medium">войдите</button> для истории и закладок</div>
           </div>
         )}
 
@@ -253,7 +253,7 @@ export function SearchView(props: SearchViewProps) {
         )}
 
         {/* ── Empty State ── */}
-        {!resp && !loading && !error && user && (
+        {!resp && !loading && !error && !quotaExceeded && (
           <div className="text-center py-10">
             <div className="mt-4 flex items-center justify-center gap-4 text-[11px] text-slate-400 dark:text-slate-500">
               <span>🎤 Голосовой поиск</span>

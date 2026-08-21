@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react'
-import { API_BASE } from '../utils/api'
+import { API_BASE, DEVICE_ID } from '../utils/api'
 
 type User = {
   id: string
@@ -29,14 +29,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const fetchMe = async (tok: string) => {
     try {
-      const r = await fetch(`${API_BASE}/api/auth/me`, { headers: { Authorization: `Bearer ${tok}` } })
+      const r = await fetch(`${API_BASE}/api/auth/me`, { headers: { Authorization: `Bearer ${tok}`, 'X-Device-Id': DEVICE_ID } })
       if (!r.ok) throw new Error('me failed')
       const u = await r.json()
       setUser(u)
-    } catch {
-      setToken(null)
-      setUser(null)
-      localStorage.removeItem('snip_token')
+    } catch (e) {
+      // сеть недоступна — не разлогиниваем, просто оставляем токен, пользователь попробует позже
+      if (e instanceof TypeError) {
+        console.warn('fetchMe network error', e)
+        setUser(null)
+      } else {
+        setToken(null)
+        setUser(null)
+        localStorage.removeItem('snip_token')
+      }
     } finally {
       setLoading(false)
     }
@@ -55,11 +61,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       r = await fetch(`${API_BASE}/api/auth/login`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Device-Id': DEVICE_ID },
         body: form.toString(),
       })
     } catch (e) {
-      if (e instanceof TypeError) throw new Error('Не удалось соединиться с сервером. Проверьте подключение к интернету и что бэкенд snippy.llm доступен.')
+      if (e instanceof TypeError) throw new Error('Не удалось соединиться с сервером. Проверьте интернет и что бэкенд доступен: ' + API_BASE)
       throw e
     }
     if (!r.ok) {
@@ -78,11 +84,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       r = await fetch(`${API_BASE}/api/auth/register`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Device-Id': DEVICE_ID },
         body: JSON.stringify({ email, password, full_name }),
       })
     } catch (e) {
-      if (e instanceof TypeError) throw new Error('Не удалось соединиться с сервером. Проверьте подключение к интернету и что бэкенд snippy.llm доступен.')
+      if (e instanceof TypeError) throw new Error('Не удалось соединиться с сервером. Проверьте интернет и что бэкенд доступен: ' + API_BASE)
       throw e
     }
     if (!r.ok) {
@@ -104,6 +110,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const headers: any = { ...(init?.headers || {}) }
     const t = localStorage.getItem('snip_token')
     if (t) headers['Authorization'] = `Bearer ${t}`
+    headers['X-Device-Id'] = DEVICE_ID
     return fetch(input, { ...init, headers })
   }
 

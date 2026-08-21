@@ -136,7 +136,7 @@ SNIP_pro/
 |---|---|---|---|
 | **А — Oracle Always Free** `DEPLOY.md:3` | `nic.ua pp.ua 0₸` + Cloudflare Free + Oracle VM `Standard.A1.Flex 4 OCPU/24GB/200GB/10TB` `eu-frankfurt-1` + `docker-compose.yml` `db/backend/frontend/caddy` (только Caddy `:80/443` наружу) | 0₸ навсегда (карта холд $1) | Прод 500 DAU, не спит, 24GB для `torch` |
 | **B — Vercel+Supabase+Render** `DEPLOY.md:72` | Supabase `vector`, Vercel `frontend`, Render `backend` Docker | Free до 20 DAU, потом $35, Render спит 15м | Демо без карты, не для прода |
-| **C1 — Pages фронт + существующий бэк** `DEPLOY.md:107` | Pages `frontend/dist` + твой бэк `VITE_API_BASE` | 0₸ фронт безлимит | Если бэк уже на `snip.pp.ua` |
+| **C1 — Pages фронт + существующий бэк** `DEPLOY.md:107` | Pages `frontend/dist` + твой бэк `VITE_API_BASE` | 0₸ фронт безлимит | Если бэк уже на `https://<бэк>.onrender.com` |
 | **C2 — Полный free** `DEPLOY.md:126` | Pages `frontend` + Neon 0.5GB `CREATE EXTENSION vector` + Render `backend` Docker (`GROQ_API_KEY`) | 0₸ без карты, Render спит | Быстрый прод без VPS (512MB впритык) |
 
 ### Docker Compose (`docker-compose.yml:1`)
@@ -146,9 +146,9 @@ SNIP_pro/
 * `frontend: build ./frontend` `args VITE_API_BASE` `snip_frontend` `depends_on backend` (no ports)
 * `caddy: caddy:2-alpine` `snip_caddy` `ports 80:80 443:443/udp` `volumes Caddyfile + caddy_data/config` `encode zstd gzip` `header HSTS 31536000`
 
-**Caddyfile:1**
+**Caddyfile:1** (для локального Docker, для Pages не нужен)
 ```
-snip.pp.ua, www.snip.pp.ua {
+:80 {
   handle /api/* { reverse_proxy backend:8001 }
   handle /docs* { reverse_proxy backend:8001 }
   handle /openapi.json* { reverse_proxy backend:8001 }
@@ -156,7 +156,6 @@ snip.pp.ua, www.snip.pp.ua {
   header { HSTS; X-Frame-Options DENY; X-Content-Type-Options nosniff }
   encode zstd gzip
 }
-:80 { respond "SNIP.pro — use https://snip.pp.ua" 200 }
 ```
 Для без домена — Pages фронт + Render бэк, Caddy не нужен.
 
@@ -167,7 +166,7 @@ snip.pp.ua, www.snip.pp.ua {
 | `POSTGRES_USER/PASSWORD/DB` | `snip / bYbJ... / snip_pro` | `docker-compose.yml:6` |
 | `SECRET_KEY` | `openssl rand -hex 32` `4d063f...` | `backend/app/config.py:43` HS256 |
 | `DATABASE_URL` | `postgresql+asyncpg://snip:...@db:5432/snip_pro` (compose) / `Neon` для Render | `backend/app/core/db.py:6` |
-| `CORS_ORIGINS` | `https://snip.pp.ua,https://www.snip.pp.ua,http://localhost:5173,https://*.pages.dev,https://*.onrender.com` | `backend/app/main.py:137` `allow_origin_regex` |
+| `CORS_ORIGINS` | `https://snippy-llm.pages.dev,https://snippy-llm.workers.dev,http://localhost:5173,https://*.pages.dev,https://*.workers.dev,https://*.onrender.com` | `backend/app/main.py:137` `allow_origin_regex` |
 | `VITE_API_BASE` | `https://<render>.onrender.com` (Pages → Env) | `frontend/Dockerfile:7` `ARG` (вшивается) / `frontend/src/utils/api.ts:5` |
 | `EMBEDDING_MODEL` | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` 384d | `backend/app/config.py:14` |
 | `OLLAMA_HOST` | `https://api.groq.com/openai/v1` | `backend/app/llm/provider.py:25` `groq.com` check |
@@ -212,7 +211,8 @@ cd frontend
 # 4. Docker (прод локально)
 docker compose up -d --build
 docker compose logs -f backend
-curl https://snip.pp.ua/api/health  # через Caddy
+curl http://localhost:8001/api/health  # через Caddy :80
+# или https://snippy-llm.pages.dev/api/health (если бэк на Render)
 ```
 
 `start.sh` / `SNIP_pro.command 127L` (двойной клик, `ROOT="$(cd "$(dirname "$0")"`, `rm postmaster.pid`, `ollama serve`, `open http://localhost:5173`), `stop.sh` `pkill vite/uvicorn`.

@@ -102,11 +102,14 @@ export function DocsView({
 
   return (
     <main className="flex-1 max-w-5xl mx-auto w-full px-4 py-6">
-      {!user ? (
-        <div className="max-w-md mx-auto">
-          <AuthGate authMode={authMode} setAuthMode={setAuthMode} setShowAuth={setShowAuth} />
+      {/* Open access — доки доступны без входа, логин опционально */}
+      {!user && (
+        <div className="mb-4 bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 flex items-center justify-between gap-3">
+          <div className="text-sm text-blue-900">Документы доступны без входа. <span className="text-blue-700">Войдите</span> чтобы загружать в облако и сохранять между устройствами.</div>
+          <button onClick={() => setShowAuth(true)} className="px-4 py-1.5 bg-blue-600 text-white rounded-full text-xs font-medium hover:bg-blue-700 shrink-0">Войти</button>
         </div>
-      ) : (
+      )}
+      {true && (
         <>
           <div className="flex flex-col gap-3 mb-4">
             {/* Header row: title + filters */}

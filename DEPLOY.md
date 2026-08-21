@@ -1,154 +1,107 @@
-# Деплой SNIP.pro на snip.pp.ua — полностью бесплатно, онлайн, с запасом
+# Деплой SNIP.pro — бесплатно, Cloudflare Pages / Workers + Render
 
-## Вариант А (рекомендуется): Oracle Always Free — 0₸/мес навсегда, 4 OCPU/24GB/200GB/10TB
+Текущий прод: **фронт** `https://snippy-llm.pages.dev` (Pages проект `snippy-llm`, `https://f7614645.snippy-llm.pages.dev`), **Git** `https://github.com/6l1x6n/SNIP_pro` `master` `538f202`. Бэк отдельно.
 
-### 1. Домен snip.pp.ua (15 мин, 0₸)
+## Вариант C (рекомендуется, 0₸, без карты): Cloudflare Pages — фронт, Render/Fly — бэк
 
-1. https://nic.ua → Регистрация → поиск `snip` → зона `.pp.ua` → в корзину → 0₸
-2. Подтверждение по SMS: `pp.ua` → ввести код или бот `@ppuabot` в Telegram
-3. NIC.UA → Мои домены → `snip.pp.ua` → NS → вставить Cloudflare NS `*.ns.cloudflare.com` (см. шаг 2)
-4. Продление раз в год за 60 дней до истечения → 0₸ (календарь!)
+### 1. Cloudflare Pages — фронт SPA (0₸, безлимит трафик/запросы, глобальный CDN)
 
-### 2. Cloudflare (5 мин, бесплатно)
+Фронт — статика `frontend/dist` (`Vite` 368kB, `_redirects /* /index.html 200`), бэк — отдельно.
 
-1. https://dash.cloudflare.com → Add site `snip.pp.ua` → Free план → скопировать 2 NS
-2. DNS → `A snip.pp.ua → X.Y.Z.W` (IP Oracle VM), `CNAME www → snip.pp.ua`, Proxy 🟠 ON
-3. SSL/TLS → Full (strict) — Cloudflare → Origin (Caddy) auto Let's Encrypt
-
-### 3. Oracle Cloud VM (30 мин, карта холд $1, списаний 0)
-
-1. https://cloud.oracle.com → Sign Up → Home Region **eu-frankfurt-1** (ближе к KZ, 80ms) → Free Tier
-2. Через 2д → Upgrade to Pay As You Go (оставляет Always Free, убирает риск удаления idle)
-3. Networking → VCN → Create `snip-vcn` 10.0.0.0/16 → public subnet + IGW
-4. Security List → Ingress: 22,80,443 → 0.0.0.0/0
-5. Compute → Create Instance → Image Ubuntu 24.04 Minimal aarch64 (Always Free) → Shape VM.Standard.A1.Flex **4 OCPU / 24GB** → Boot 50GB → SSH key `~/.ssh/id_rsa.pub` → Public IP
-
-> Если `Out of host capacity` → пробуйте AD-2/AD-3 или `2 OCPU/12GB` ×2 или Stockholm регион.
-
-### 4. Деплой (10 мин, SSH)
-
-```bash
-ssh ubuntu@X.Y.Z.W
-sudo apt update && sudo apt install -y docker.io docker-compose-plugin git
-sudo usermod -aG docker $USER && newgrp docker
-sudo iptables -I INPUT -p tcp --dport 80 -j ACCEPT
-sudo iptables -I INPUT -p tcp --dport 443 -j ACCEPT
-
-git clone https://github.com/<you>/SNIP_pro.git ~/SNIP_pro
-cd ~/SNIP_pro
-
-# .env — сгенерируйте секрет!
-openssl rand -hex 32  # → в SECRET_KEY
-cp .env.example .env
-nano .env  # POSTGRES_PASSWORD, SECRET_KEY, ADMIN_EMAIL=ваш@email, CORS_ORIGINS=https://snip.pp.ua
-# ОБЯЗАТЕЛЬНО задайте VITE_API_BASE=https://snip.pp.ua (фронт собирается с ним внутри образа)
-
-docker compose up -d --build
-docker compose logs -f backend  # ждите "ready"
-docker compose exec backend python -c "from scripts.seed import main; import asyncio; asyncio.run(main())"  # опционально seed
-
-# Keep alive от удаления idle (Oracle удаляет если CPU<20% 7д)
-(crontab -l 2>/dev/null; echo "*/10 * * * * curl -s https://snip.pp.ua/api/health >/dev/null") | crontab -
-```
-
-Проверка: `curl https://snip.pp.ua/api/health` → `{"status":"ok"}`
-
-### 5. Обновления
-
-```bash
-cd ~/SNIP_pro && git pull && docker compose up -d --build
-```
-
-### 6. Прод-заметки (compose уже заточен под прод)
-
-* `docker-compose.yml` **не публикует** порты `db` (5432), `backend` (8001) и `frontend` (80): все они доступны только внутри docker-сети, а наружу ходит только **Caddy** (80/443). Снаружи БД и API недостижимы напрямую.
-* Код бэкенда **запечатан в образ** (bind-mount `./backend/app` убран) — локальные правки не перезапишут прод случайно. Для обновления кода: `git pull && docker compose up -d --build`.
-* Загрузки хранятся в `./backend/storage` (монтируется как volume) — не потеряются при пересборке образа.
-* `VITE_API_BASE` подставляется **на этапе сборки** фронта (build arg). Менять адрес API после сборки нельзя — только через `--build` с новым `.env`.
-* Точка входа TLS: Cloudflare (Full strict) → Caddy (auto Let's Encrypt) → сервисы. Прямой HTTP на IP отвечает заглушкой.
-
----
-
-## Вариант B (без карты): Vercel + Supabase Free (до 20 DAU, потом $35)
-
-1. Supabase → New project → enable `vector` → `DATABASE_URL` → Vercel env
-2. Vercel → Import `frontend` → `VITE_API_BASE=https://<render>.onrender.com`
-3. Render → Web Service `backend` → Docker → `DATABASE_URL` → free (спит 15м, 30д удаление — не для продакшн норм)
-
-> Для headroom 500 DAU — только Oracle подходит.
-
-## Env для продакшн
-
-```
-POSTGRES_USER=snip
-POSTGRES_PASSWORD=сгенерить_32
-POSTGRES_DB=snip_pro
-SECRET_KEY=openssl_rand_hex_32
-CORS_ORIGINS=https://snip.pp.ua,https://www.snip.pp.ua
-VITE_API_BASE=https://snip.pp.ua
-ADMIN_EMAIL=admin@snip.pp.ua
-ENABLE_COLLECTOR=1
-```
-
-## Бэкап (бесплатно)
-
-```bash
-docker compose exec db pg_dump -U snip snip_pro | gzip > /home/ubuntu/backup-$(date +%F).sql.gz
-# + Oracle Object Storage free 20GB → rclone
-```
-
-## Защита
-
-* Cloudflare WAF free, Caddy auto TLS, `allow_origins` без `*`, JWT HS256, `slowapi 30/min`, `hashed_password bcrypt`, `pgvector` внутри docker сети.
-
----
-
-## Вариант C (самый бесплатный фронтенд): Cloudflare Pages — 0₸, без лимита запросов
-
-Cloudflare Pages — щедрый бесплатный хостинг статических сайтов: неограниченный трафик и запросы, глобальный CDN, бесплатные SSL. Идеально для SPA-фронтенда SNIP.pro. Бэкенд (FastAPI + Postgres/pgvector) требует сервера и в этом варианте либо уже крутится на snip.pp.ua, либо докручивается бесплатно отдельно.
-
-### Сценарий 1 — только фронтенд (рекомендуется, если бэкенд уже работает)
-
-Фронтенд общается с API через переменную `VITE_API_BASE`, поэтому достаточно собрать SPA и отдать её с Cloudflare, а запросы пускать на уже существующий бэкенд.
-
-1. Cloudflare Dashboard → **Workers & Pages → Create → Pages → подключить Git** (GitHub/GitLab) → выбрать репозиторий `SNIP_pro`.
+1. Cloudflare Dashboard → **Workers & Pages → Create → Pages → Connect Git** → `6l1x6n/SNIP_pro`
 2. Настройки сборки:
    - **Build command:** `npm install && npm run build`
    - **Build output directory:** `dist`
    - **Root directory:** `frontend`
-3. **Environment variables (Production):** `VITE_API_BASE=https://snip.pp.ua` (или адрес вашего бэкенда). Для Preview тоже задайте `VITE_API_BASE`.
-4. **SPA-роутинг:** в репозиторий уже добавлен `frontend/public/_redirects` (`/*  /index.html 200`), Vite копирует его в `dist`. Он перенаправляет все пути на `index.html`.
-5. **Deploy** → через ~1 минуту сайт на `*.pages.dev`. В `wrangler.toml` (в `frontend/`) прописан проект для CLI-деплоя: `wrangler pages deploy dist`.
-6. (Опц.) Свой домен: Cloudflare → DNS → добавить сайт вашего домена → CNAME `snip.pp.ua` (или поддомен) → Pages → Custom domains.
+3. **Environment variables (Production + Preview):** `VITE_API_BASE=https://<ваш-бэк>.onrender.com` (URL бэка с Render/Fly, не `pages.dev`!). Для `workers.dev` алиаса тоже задайте.
+4. **Deploy** → через минуту `https://<hash>.snippy-llm.pages.dev` + `https://snippy-llm.pages.dev` (прод). В `frontend/wrangler.toml:5` проект `snippy-llm`: `npx wrangler pages deploy frontend/dist --project-name snippy-llm --branch master --commit-dirty=true`
+5. (Опц.) Custom domain: Pages → Custom domains → `CNAME` ваш домен → Pages. `workers.dev` алиас: Workers → `snippy-llm.workers.dev` через Workers Static Assets (тот же `dist`).
 
-> Бесплатный лимит Pages: 500 сборок/мес, файлы до 100 МБ, трафик и запросы — безлимит на Free. Этого хватает с запасом.
+> Лимит Pages: 500 сборок/мес, файлы до 100МБ, трафик безлимит. `allow_origin_regex` в `backend/app/main.py:172` уже разрешает `https://*.pages.dev` и `https://*.workers.dev`.
 
-### Сценарий 2 — полностью бесплатный стек (фронт + бэкенд)
+### 2. База — Neon Free (pgvector)
 
-Если бэкенда ещё нет или хотите всё на бесплатном:
+1. https://neon.tech → New project → SQL: `CREATE EXTENSION vector; CREATE EXTENSION pg_trgm;`
+2. Скопировать `DATABASE_URL` `postgresql://...`
 
-* **Фронтенд:** Cloudflare Pages (сценарий 1), `VITE_API_BASE` → адрес бэкенда ниже.
-* **База:** [Neon](https://neon.tech) Free — Postgres с pgvector, 0.5 ГБ, до 10 проектов (бесплатно). Включите расширение `vector`.
-* **Бэкенд (FastAPI + Docker):** [Render](https://render.com) Free Web Service (сборка из Dockerfile, спит после 15 мин простоя, 30 дней удаление — для демо/теста ок) **ИЛИ** [Fly.io](https://fly.io) Free (3 shared-1x VM, не спят). Прокиньте `DATABASE_URL` от Neon, `CORS_ORIGINS=https://<ваш>.pages.dev`, `SECRET_KEY`.
-* **LLM/эмбеддинги:** [Groq](https://groq.com) бесплатно (`OLLAMA_HOST=https://api.groq.com/openai/v1`, `GROQ_API_KEY`). Для эмбеддингов либо лёгкая модель на хосте бэкенда (Render 512 МБ — впритык, Fly — комфортнее), либо бесплатный HF Inference. Это единственный заметный «вес» стека.
+### 3. Бэк — Render Free (Docker) или Fly.io (не спит)
 
-### Переменные окружения (итог)
+**Render Free** (спит 15м, 30д удаление — ок для демо):
+1. https://render.com → New Web Service → Connect `6l1x6n/SNIP_pro` → Runtime `Docker` → `Dockerfile: backend/Dockerfile` → Root `backend` не нужен, build из корня
+2. Env: `DATABASE_URL=<neon>`, `SYNC_DATABASE_URL=<neon>`, `SECRET_KEY=$(openssl rand -hex 32)`, `GROQ_API_KEY=gsk_...`, `OLLAMA_HOST=https://api.groq.com/openai/v1`, `GROQ_MODEL=qwen/qwen3.6-27b`, `CORS_ORIGINS=https://snippy-llm.pages.dev,https://snippy-llm.workers.dev,https://*.pages.dev,https://*.workers.dev`, `QUOTA_ENABLED=0`, `DISABLE_DB=0`, `ADMIN_EMAIL=...`
+3. Deploy → `https://<ваш>.onrender.com` → `curl https://<ваш>.onrender.com/api/health` → `{"status":"ok","db":true}`
+4. Keep-alive от сна: `*/10 * * * * curl -s https://<ваш>.onrender.com/api/health >/dev/null` (cron/UptimeRobot)
+
+**Fly.io** (3 shared-1x VM free, не спит, 1GB — комфортнее для `torch`):
+- `fly launch --dockerfile backend/Dockerfile` → тот же Env
+
+**Проверка:** `curl -X POST https://<бэк>/api/search -H "Content-Type: application/json" -d '{"query":"ширина коридора","mode":"fast"}'`
+
+### Env итог (Pages + бэк)
 
 | Где | Переменная | Значение |
 |---|---|---|
-| Cloudflare Pages | `VITE_API_BASE` | `https://<бэкенд>` |
-| Бэкенд | `DATABASE_URL` | Neon Postgres + pgvector |
-| Бэкенд | `CORS_ORIGINS` | `https://<ваш>.pages.dev` |
-| Бэкенд | `SECRET_KEY` | `openssl rand -hex 32` |
-| Бэкенд | `GROQ_API_KEY` | ключ Groq (бесплатно) |
+| Cloudflare Pages | `VITE_API_BASE` | `https://<бэк>.onrender.com` |
+| Бэк (Render) | `DATABASE_URL` | `Neon Postgres + pgvector` |
+| Бэк | `CORS_ORIGINS` | `https://snippy-llm.pages.dev,https://snippy-llm.workers.dev` |
+| Бэк | `SECRET_KEY` | `openssl rand -hex 32` |
+| Бэк | `GROQ_API_KEY` | `gsk_...` https://console.groq.com/keys |
+| Бэк | `QUOTA_ENABLED` | `0` безлимит |
+| Бэк | `DISABLE_DB` | `0` (1 только для демо без БД) |
 
-### Быстрый деплой через CLI
+### Быстрый CLI деплой фронта
 
 ```bash
 cd frontend
-npm install && npm run build        # локальная проверка
-npx wrangler pages deploy dist --project-name snippy-llm --branch main
+npm install && npm run build        # проверка локально
+npx wrangler pages deploy dist --project-name snippy-llm --branch master --commit-dirty=true
+# workers.dev алиас (если мигрируете на Workers Static Assets):
+# npx wrangler deploy --assets frontend/dist --name snippy-llm --compatibility-date 2024-09-23
 ```
 
-> Примечание: сам фронтенд абсолютно бесплатен на Cloudflare Pages. Бэкенд бесплатен на Render/Fly+Neon в рамках free-квот; при росте (сотни DAU) переходите на Вариант А (Oracle Always Free) — там и фронт, и бэкенд на одной машине.
+---
 
+## Вариант А: Oracle Always Free — 0₸/мес 4 OCPU/24GB/200GB/10TB (опционально, без домена)
+
+Если нужен always-on без сна (500 DAU) — по IP + Caddy `:80` (без домена, фронт на `https://snippy-llm.pages.dev`).
+
+1. https://cloud.oracle.com → EU Frankfurt 1 → VM.Standard.A1.Flex 4 OCPU/24GB Boot 50GB
+2. Security List Ingress 22,80,443 → 0.0.0.0/0
+3. SSH:
+```bash
+git clone https://github.com/6l1x6n/SNIP_pro.git ~/SNIP_pro
+cd ~/SNIP_pro
+cp .env.example .env
+nano .env  # POSTGRES_PASSWORD, SECRET_KEY, CORS_ORIGINS=https://snippy-llm.pages.dev, VITE_API_BASE=https://<IP или pages.dev>
+docker compose up -d --build
+curl http://<IP>/api/health
+# keep-alive
+(crontab -l 2>/dev/null; echo "*/10 * * * * curl -s http://<IP>/api/health >/dev/null") | crontab -
+```
+`docker-compose.yml` не публикует `db/backend/frontend` наружу, только `caddy:80/443`. `VITE_API_BASE` вшивается на сборке фронту, менять — только `--build`.
+
+---
+
+## Вариант B: Vercel + Supabase (до 20 DAU)
+
+Supabase `vector` → Vercel `frontend` `VITE_API_BASE` → Render `backend` — как C, но Vercel вместо Pages.
+
+---
+
+## Обновления
+
+```bash
+cd ~/SNIP_pro && git pull && docker compose up -d --build  # VM
+# Pages: git push → авто redeploy; или wrangler pages deploy
+```
+
+## Бэкап
+
+```bash
+docker compose exec db pg_dump -U snip snip_pro | gzip > backup-$(date +%F).sql.gz
+# или Neon → Dashboard → Backups
+```
+
+## Защита
+
+Cloudflare WAF free, Caddy auto TLS (`:80`), `allow_origin_regex https://*.pages.dev|*.workers.dev|*.onrender.com`, JWT HS256 7д, `slowapi 1000/min` (безлимит), `bcrypt`, `pgvector` внутри docker сети.
