@@ -21,13 +21,15 @@ class SNIPChunker:
     Сохраняет номер пункта и страницу.
     """
 
-    PARAGRAPH_RE = re.compile(r'^\s*(\d+(?:\.\d+){1,4})(?:\.|\))?\s+')
-    CHAPTER_RE = re.compile(r'^\s*(Глава|Раздел|РАЗДЕЛ|ГЛАВА|Приложение)\s+(\d+|[А-Я])[\.\s]*(.*)', re.IGNORECASE)
-    SUBPARA_RE = re.compile(r'^\s*([а-я]\)|\d+\)|\-)\s+')
+    # Улучшенные regex — поддерживают 5.8, 5.8.1., 6.12), Приложение А, Таблица 3
+    PARAGRAPH_RE = re.compile(r'^\s*(\d+(?:\.\d+){1,4})(?:[\.\)])?\s+')
+    CHAPTER_RE = re.compile(r'^\s*(Глава|Раздел|РАЗДЕЛ|ГЛАВА|Приложение|ПРИЛОЖЕНИЕ)\s+(\d+|[А-ЯA-Z])(?:[\.\s]+(.*))?', re.IGNORECASE)
+    SUBPARA_RE = re.compile(r'^\s*([а-яa-z]\)|\d+\)|\-)\s+')
+    TABLE_RE = re.compile(r'^\s*Таблица\s+(\d+)', re.IGNORECASE)
 
-    # макс токенов на чанк ~ 500 ~ 350-400 слов
-    MAX_CHARS = 2000  # примерно 500 токенов
-    OVERLAP_CHARS = 400
+    # макс токенов на чанк ~ 650 (длиннее для таблиц/больших пунктов)
+    MAX_CHARS = 2800
+    OVERLAP_CHARS = 600
 
     def chunk(self, pages_text: List[Dict], base_meta: Dict = None) -> List[RawChunk]:
         """
@@ -55,6 +57,15 @@ class SNIPChunker:
                 stripped = line.strip()
                 if not stripped:
                     continue
+                # Detect table — отдельный чанк тип table (не склеиваем с предыдущим)
+                tm = self.TABLE_RE.match(stripped)
+                if tm:
+                    if acc.strip():
+                        raw_blocks.extend(self._split_long(acc.strip(), page_num, acc_chapter, acc_section, acc_para, type_hint="paragraph"))
+                        acc = ""
+                    # таблица — собираем до следующей главы/параграфа
+                    raw_blocks.append(RawChunk(text=stripped, page=page_num, chapter=acc_chapter, section=acc_section, paragraph=acc_para or f"Таблица {tm.group(1)}", type="table"))
+                    continue
                 # Detect chapter
                 cm = self.CHAPTER_RE.match(stripped)
                 if cm:
@@ -62,7 +73,7 @@ class SNIPChunker:
                     if acc.strip():
                         raw_blocks.extend(self._split_long(acc.strip(), page_num, acc_chapter, acc_section, acc_para))
                         acc = ""
-                    current_chapter = stripped[:200]
+                    current_chapter = stripped[:250]
                     acc_chapter = current_chapter
                     continue
                 # Detect paragraph start
@@ -72,29 +83,40 @@ class SNIPChunker:
                     if acc.strip():
                         raw_blocks.extend(self._split_long(acc.strip(), page_num, acc_chapter, acc_section, acc_para))
                     acc = stripped
-                    acc_para = pm.group(1)
-                    # try to extract section from first part?
-                    # e.g., 1.2 -> section 1.2?
+                    acc_para = pm.group(1).rstrip('.')
                     continue
                 else:
-                    # continuation
-                    if acc:
-                        acc += " " + stripped
-                    else:
+                    # continuation — также ловим внутристрочные номера пунктов типа "5.8 Ширина..."
+                    # если acc пустой и внутри строки есть паттерн пункта, выделяем его
+                    inline_pm = re.match(r'^.*?(\d+\.\d+(?:\.\d+)*)\s+[А-ЯA-Z]', stripped)
+                    if not acc and inline_pm:
                         acc = stripped
-                        acc_para = None
+                        acc_para = inline_pm.group(1)
+                    else:
+                        if acc:
+                            acc += " " + stripped
+                        else:
+                            acc = stripped
+                            acc_para = None
             # flush page remainder
             if acc.strip():
                 raw_blocks.extend(self._split_long(acc.strip(), page_num, acc_chapter, acc_section, acc_para))
 
-        # Post-process: merge very short chunks (<100 chars) with next if same paragraph
+        # Post-process: merge very short chunks (<100 chars) only if same paragraph
         merged: List[RawChunk] = []
         for c in raw_blocks:
-            if c.text and len(c.text) < 80 and merged and merged[-1].paragraph == c.paragraph:
-                merged[-1].text += " " + c.text
-            else:
-                if len(c.text.strip()) >= 30:  # filter noise
-                    merged.append(c)
+            if c.text and len(c.text) < 100 and merged and merged[-1].paragraph == c.paragraph:
+                # не мёржим таблицы и не мёржим разные параграфы
+                if c.type != "table" and merged[-1].type != "table" and c.paragraph is not None:
+                    merged[-1].text += " " + c.text
+                    continue
+            # filter noise: tables kept even if short, paragraph headers kept if >=15, others need >=25
+            if c.type == "table":
+                merged.append(c)
+            elif c.paragraph is not None and len(c.text.strip()) >= 15:
+                merged.append(c)
+            elif len(c.text.strip()) >= 25:
+                merged.append(c)
 
         # Calculate token_count approx
         for m in merged:
@@ -102,26 +124,32 @@ class SNIPChunker:
 
         return merged
 
-    def _split_long(self, text: str, page: int, chapter, section, para) -> List[RawChunk]:
+    def _split_long(self, text: str, page: int, chapter, section, para, type_hint: str = "paragraph") -> List[RawChunk]:
         if len(text) <= self.MAX_CHARS:
-            return [RawChunk(text=text, page=page, chapter=chapter, section=section, paragraph=para)]
-        # sliding window
+            return [RawChunk(text=text, page=page, chapter=chapter, section=section, paragraph=para, type=type_hint)]
+        # sliding window with smart cut at sentence / semicolon
         chunks = []
         start = 0
         while start < len(text):
             end = start + self.MAX_CHARS
             slice_text = text[start:end]
-            # try to cut at sentence boundary
+            # try to cut at sentence boundary (. ! ? ; )
             if end < len(text):
-                # find last period before end
-                last_dot = slice_text.rfind(". ")
-                if last_dot > self.MAX_CHARS * 0.6:
+                # find last sentence end before limit
+                last_dot = max(slice_text.rfind(". "), slice_text.rfind("! "), slice_text.rfind("? "), slice_text.rfind("; "))
+                if last_dot > self.MAX_CHARS * 0.55:
                     slice_text = slice_text[:last_dot+1]
                     end = start + len(slice_text)
-            chunks.append(RawChunk(text=slice_text.strip(), page=page, chapter=chapter, section=section, paragraph=para))
+                else:
+                    # fallback: cut at last space to avoid breaking word
+                    last_sp = slice_text.rfind(" ")
+                    if last_sp > self.MAX_CHARS * 0.8:
+                        slice_text = slice_text[:last_sp]
+                        end = start + len(slice_text)
+            chunks.append(RawChunk(text=slice_text.strip(), page=page, chapter=chapter, section=section, paragraph=para, type=type_hint))
             if end >= len(text):
                 break
-            start = end - self.OVERLAP_CHARS
+            start = max(0, end - self.OVERLAP_CHARS)
         return chunks
 
     def chunk_extracted(self, extracted) -> List[RawChunk]:

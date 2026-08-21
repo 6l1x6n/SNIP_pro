@@ -12,8 +12,10 @@ class Settings(BaseSettings):
     sync_database_url: str = "postgresql://alikhan@/snip_pro?host=/tmp"
     # Embedding
     embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"  # lightweight, ru/kz/en, 384d, fallback for MVP
-    # For production: "BAAI/bge-m3" (1024d) - download heavy, switch via env
+    embedding_provider: str = ""  # "" авто | gemini | fastembed | sentence-transformers
     embedding_dim: int = 384
+    gemini_api_key: str | None = None  # aistudio.google.com, free tier без карты (EMBEDDING_PROVIDER=gemini)
+    gemini_embedding_model: str = "gemini-embedding-001"  # 768d (text-embedding-004 decommissioned 2026)
     embedding_device: str = "cpu"
     # LLM
     ollama_host: str = "http://localhost:11434"
@@ -70,6 +72,12 @@ class Settings(BaseSettings):
                 "JWT tokens signed with the default key are forgeable.",
                 stacklevel=2,
             )
+        # Gemini embedding: 768d — не даём случайно смешать 384d-колонку с 768d-векторами
+        if self.embedding_provider == "gemini" and self.embedding_dim == 384 and self.gemini_api_key:
+            import sys
+            print("ℹ️  EMBEDDING_PROVIDER=gemini: embedding_dim 384 → 768 (gemini-embedding-001). "
+                  "БД с векторами 384d требует переиндексации.", file=sys.stderr)
+            self.embedding_dim = 768
 
 settings = Settings()
 PDF_DIR.mkdir(parents=True, exist_ok=True)

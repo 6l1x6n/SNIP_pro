@@ -12,7 +12,14 @@ if _DISABLE_DB:
     sync_engine = None  # type: ignore
     AsyncSessionLocal = None  # type: ignore
 else:
-    async_engine = create_async_engine(settings.database_url, echo=settings.debug, pool_size=10, max_overflow=20, pool_pre_ping=True)
+    # Neon direct-эндпоинт: лимит ~100 коннектов, поэтому пул скромнее
+    async_engine = create_async_engine(
+        settings.database_url,
+        echo=settings.debug,
+        pool_size=5,
+        max_overflow=10,
+        pool_pre_ping=True,
+    )
     sync_engine = create_engine(settings.sync_database_url, echo=False, pool_pre_ping=True)
     AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False, class_=AsyncSession)
 

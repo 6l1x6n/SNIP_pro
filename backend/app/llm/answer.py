@@ -9,13 +9,15 @@ import re
 def quote_grounded(quote: str, contexts: List[str], threshold: float = 0.85) -> bool:
     if not quote or len(quote.strip()) < 10:
         return False
-    q = re.sub(r'\s+', ' ', quote.strip().lower())
+    # normalize ё->е, lower, whitespace
+    def _norm(s: str) -> str:
+        return re.sub(r'\s+', ' ', s.strip().lower().replace('ё', 'е'))
+    q = _norm(quote)
     for ctx in contexts:
-        c = re.sub(r'\s+', ' ', ctx.lower())
+        c = _norm(ctx)
         if q in c:
             return True
         # fuzzy: check if 85% of quote words present consecutively
-        # simple sliding
         q_words = q.split()
         c_words = c.split()
         if len(q_words) < 5:
@@ -25,6 +27,75 @@ def quote_grounded(quote: str, contexts: List[str], threshold: float = 0.85) -> 
             if match / len(q_words) >= threshold:
                 return True
     return False
+
+
+def find_best_grounded_quote(quote: str, contexts: List[str], top_chunks: List[Dict]) -> str:
+    """Find the most similar substring from contexts to the LLM quote.
+    Returns original context snippet if quote not grounded, else original quote.
+    Uses token overlap scoring.
+    """
+    if not quote:
+        return contexts[0][:500] if contexts else ""
+    if quote_grounded(quote, contexts):
+        return quote
+    # not grounded — find best chunk by overlap
+    q_words = set(re.sub(r'\s+', ' ', quote.lower().replace('ё','е')).split())
+    best = ""
+    best_score = -1
+    for idx, ctx in enumerate(contexts):
+        ctx_words = set(re.sub(r'\s+', ' ', ctx.lower().replace('ё','е')).split())
+        if not q_words or not ctx_words:
+            continue
+        inter = len(q_words & ctx_words)
+        union = len(q_words | ctx_words)
+        jaccard = inter / union if union else 0
+        # also check if paragraph matches LLM paragraph hint
+        if jaccard > best_score:
+            best_score = jaccard
+            best = ctx
+    if best and best_score > 0.15:
+        # return first sentence-ish slice of best context
+        snippet = best[:500]
+        # try cut at sentence end
+        dot = snippet.rfind(". ")
+        if dot > 200:
+            snippet = snippet[:dot+1]
+        return snippet.strip()
+    # fallback to top chunk's text directly
+    if top_chunks and top_chunks[0].get("text"):
+        t = top_chunks[0]["text"]
+        return t[:500].strip()
+    return contexts[0][:500] if contexts else quote[:500]
+
+
+def _extract_balanced_json(s: str) -> Optional[str]:
+    """Extract first balanced {...} JSON object from string (handles nested)."""
+    start = s.find('{')
+    if start == -1:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(s)):
+        ch = s[i]
+        if esc:
+            esc = False
+            continue
+        if ch == '\\' and in_str:
+            esc = True
+            continue
+        if ch == '"' and not esc:
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return s[start:i+1]
+    return None
 
 class AnswerService:
     def __init__(self, llm: LLMProvider = None):
@@ -105,13 +176,15 @@ class AnswerService:
 
         try:
             raw = await self.llm.generate(prompt, max_tokens=max_tokens, temperature=temp)
-            # try to extract JSON — strip markdown fences first
+            # try to extract JSON — strip markdown fences first, strip <think>
             import json
-            clean = re.sub(r'```(?:json)?', '', raw).replace('```','').strip()
-            # handle truncated or extra text before/after JSON
-            m = re.search(r'\{.*\}', clean, re.DOTALL)
+            # remove think chain again if present
+            raw_clean_think = re.sub(r'<think>.*?(?:</think>\s*|$)', '', raw, flags=re.S)
+            clean = re.sub(r'```(?:json)?', '', raw_clean_think).replace('```','').strip()
+            # extract balanced JSON (fixes greedy \{.*\})
+            j_raw_balanced = _extract_balanced_json(clean)
             j = None
-            if not m:
+            if not j_raw_balanced:
                 # fallback: try to extract "answer": "..." even if JSON truncated
                 am = re.search(r'"answer"\s*:\s*"([^"]+)"', clean, re.DOTALL)
                 if am:
@@ -128,9 +201,9 @@ class AnswerService:
                                     j[key] = int(km2.group(1))
                                 except:
                                     j[key] = km2.group(1)
-            if j is None and m:
-                j_raw = m.group(0)
-                # fix common LLM JSON errors: trailing commas
+            if j is None and j_raw_balanced:
+                j_raw = j_raw_balanced
+                # fix common LLM JSON errors: trailing commas, unescaped newlines inside strings handled by json
                 j_raw = re.sub(r',\s*}', '}', j_raw)
                 j_raw = re.sub(r',\s*]', ']', j_raw)
                 try:
@@ -153,18 +226,23 @@ class AnswerService:
                                         j[key] = km2.group(1)
                         pass
                     else:
-                        # fallback: try to find smallest valid JSON
+                        # fallback: try smallest valid JSON
                         try:
-                            j = json.loads(re.search(r'\{[^{}]*\{.*\}[^{}]*\}', clean, re.DOTALL).group(0)) if re.search(r'\{[^{}]*\{.*\}[^{}]*\}', clean, re.DOTALL) else json.loads(j_raw)
+                            inner = _extract_balanced_json(clean[clean.find('{')+1:]) if clean.count('{')>1 else None
+                            if inner:
+                                j = json.loads(inner)
+                            else:
+                                raise e
                         except Exception as e2:
-                            raise
+                            raise e
                 quote = j.get("quote", "") if j else ""
             if j is not None:
                 quote = j.get("quote", "")
-                # grounding check
+                # grounding check — FIXED: find best matching context instead of blindly taking contexts[0]
                 if quote and not quote_grounded(quote, contexts_texts):
-                    quote = contexts_texts[0][:300]
-                    j["quote"] = quote
+                    grounded_quote = find_best_grounded_quote(quote, contexts_texts, top_chunks)
+                    j["quote"] = grounded_quote
+                    quote = grounded_quote
                 ans_text = j.get("answer") or j.get("ответ") or j.get("Answer") or ""
                 if not ans_text or "```" in ans_text:
                     ans_text = re.sub(r'```.*?```', '', str(ans_text), flags=re.DOTALL).strip() or str(j.get("answer","")).strip()
@@ -188,11 +266,24 @@ class AnswerService:
                 para = j.get("paragraph")
                 if not para or str(para).strip() in ["—", "-", "", "null", "None"]:
                     para = top.get("paragraph")
+                # validate paragraph exists in provided contexts — if LLM invented, fallback to top
+                valid_paras = {str(ch.get("paragraph") or "").strip() for ch in top_chunks if ch.get("paragraph")}
+                if para and str(para).strip() not in valid_paras and valid_paras:
+                    # LLM hallucinated paragraph, use top's
+                    para = top.get("paragraph")
                 pg = j.get("page")
                 try:
                     pg = int(pg) if pg not in [None, "", "—", "null"] else top.get("page")
                 except:
                     pg = top.get("page")
+                # validate page range 1..total
+                if pg is not None:
+                    try:
+                        pg_int = int(pg)
+                        if pg_int < 1 or pg_int > 5000:
+                            pg = top.get("page")
+                    except:
+                        pg = top.get("page")
                 return AnswerBlock(
                     answer=ans_text[:800] if ans_text else re.sub(r'```.*?```','',clean, flags=re.DOTALL).strip()[:500],
                     normative_basis=basis,

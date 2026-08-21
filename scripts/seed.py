@@ -15,9 +15,16 @@ from app.core.db import AsyncSessionLocal, async_engine, Base
 from sqlalchemy import text
 
 async def init_db():
+    import os
+    if os.getenv("SKIP_DDL", "0") == "1":
+        print("SKIP_DDL=1 — пропускаю DDL (таблицы уже созданы)")
+        return
     async with async_engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+        # регистрируем ВСЕ модели в Base.metadata до create_all (FK documents.owner_id -> users)
+        from app.models.user import User  # noqa: F401
+        from app.models.pinned import PinnedDocument  # noqa: F401
         await conn.run_sync(Base.metadata.create_all)
         try:
             await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_chunks_tsv ON chunks USING gin (to_tsvector('russian', text))"))

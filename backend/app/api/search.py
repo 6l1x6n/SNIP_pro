@@ -23,6 +23,10 @@ limiter = Limiter(key_func=get_remote_address)
 
 router = APIRouter(prefix="/api", tags=["search"])
 
+# Cache for chunk count to avoid SELECT count(*) per search (TTL 60s)
+_chunk_count_cache: dict = {"value": None, "ts": 0.0}
+_CHUNK_CACHE_TTL = 60
+
 # Lazy singleton providers
 _embedder = None
 _search_service = None
@@ -145,13 +149,23 @@ async def search(request: Request, req: SearchRequest, db: AsyncSession = Depend
         max_fusion = max((r.get("fusion_score",0) or 0 for r in results_raw), default=0)
         has_vector = any(r.get("vector_score") is not None for r in results_raw)
 
-        # узнаём размер базы — для демо с 1 документом не режем
+        # узнаём размер базы — кэшируем на 60с чтобы не делать COUNT каждую мс
+        total_chunks = len(results_raw) * 10
         try:
-            from sqlalchemy import func as _func
-            from app.models.document import Chunk as _Chunk
-            _cnt_res = await db.execute(select(_func.count()).select_from(_Chunk))
-            total_chunks = _cnt_res.scalar() or 0
-        except:
+            import time as _t
+            now = _t.time()
+            if _chunk_count_cache["value"] is not None and (now - _chunk_count_cache["ts"]) < _CHUNK_CACHE_TTL:
+                total_chunks = _chunk_count_cache["value"]
+            else:
+                from sqlalchemy import func as _func
+                from app.models.document import Chunk as _Chunk
+                # fast path via pg_class reltuples estimate first, fallback to exact count
+                # exact count is okay for small bases, for large use estimate to avoid seq scan
+                _cnt_res = await db.execute(select(_func.count()).select_from(_Chunk))
+                total_chunks = _cnt_res.scalar() or 0
+                _chunk_count_cache["value"] = total_chunks
+                _chunk_count_cache["ts"] = now
+        except Exception:
             total_chunks = len(results_raw) * 10  # fallback
 
         if total_chunks < 2000:

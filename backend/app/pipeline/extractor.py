@@ -32,21 +32,38 @@ class PDFExtractor:
         pages: List[PageText] = []
         total_text_len = 0
         for i, page in enumerate(doc):
+            # Try blocks sorted by reading order (y, x) for better paragraph preservation
+            blocks = page.get_text("blocks")
+            # sort blocks top-to-bottom, left-to-right
+            try:
+                blocks_sorted = sorted([b for b in blocks if len(b) > 4 and b[4].strip()], key=lambda b: (round(b[1]/20), b[0]))
+                text_blocks = "\n".join(b[4] for b in blocks_sorted)
+            except Exception:
+                text_blocks = ""
             text = page.get_text("text", flags=fitz.TEXTFLAGS_TEXT)
-            # Also try to preserve reading order
-            if not text.strip():
-                # try blocks
-                blocks = page.get_text("blocks")
-                text = "\n".join(b[4] for b in blocks if len(b) > 4 and b[4].strip())
-            has_text = len(text.strip()) > 50
+            # prefer blocks if longer or text is empty
+            if text_blocks and len(text_blocks.strip()) > len(text.strip()) * 0.9:
+                text = text_blocks
+            if not text.strip() and text_blocks:
+                text = text_blocks
+            # normalize line breaks, preserve paragraph markers
+            # ensure each block on new line
+            has_text = len(text.strip()) > 40
             total_text_len += len(text.strip())
-            pages.append(PageText(page_num=i+1, text=text, has_text=has_text))
+            # extract bbox for future highlighting (store first block bbox)
+            bbox = None
+            if blocks_sorted:
+                try:
+                    bbox = {"x0": blocks_sorted[0][0], "y0": blocks_sorted[0][1], "x1": blocks_sorted[0][2], "y1": blocks_sorted[0][3]}
+                except:
+                    bbox = None
+            pages.append(PageText(page_num=i+1, text=text, has_text=has_text, bbox=bbox))
         doc.close()
 
-        # heuristic: scanned if <30% pages have text or avg <100 chars
+        # heuristic: scanned if <50% pages have text or avg <80 chars (more sensitive than 30%/100)
         scanned_ratio = sum(1 for p in pages if p.has_text) / max(1, len(pages))
         avg_len = total_text_len / max(1, len(pages))
-        is_scanned = scanned_ratio < 0.3 or avg_len < 100
+        is_scanned = scanned_ratio < 0.5 or avg_len < 80
 
         # metadata
         try:

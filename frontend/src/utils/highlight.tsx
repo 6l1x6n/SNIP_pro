@@ -84,6 +84,14 @@ function escapeReg(s: string) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+// Make ё ↔ е interchangeable in both query and text highlighting
+function yoVariants(s: string): string {
+  // replace each е/ё with [её] for regex, after escaping
+  // Use single regex to avoid double-replacement of inserted brackets
+  const esc = escapeReg(s)
+  return esc.replace(/[её]/g, '[её]')
+}
+
 function normalizeQuery(q: string): string {
   return q.toLowerCase().replace(/ё/g, 'е').replace(/[^\w\s\-а-яё]/gi, ' ').replace(/\s+/g, ' ').trim()
 }
@@ -136,9 +144,9 @@ export function buildTokenMap(query: string, paletteId: string = 'default', mono
     const col = paletteId==='mono' && monoHex ? palette[0] : palette[i % palette.length]
     tokenMap.set(t.toLowerCase(), { token: t, index: i, color: col })
   })
-  // Build regex longest first
+  // Build regex longest first — with ё/е variants
   const sorted = [...tokens].sort((a, b) => b.length - a.length)
-  const pattern = sorted.map(escapeReg).join('|')
+  const pattern = sorted.map(t => yoVariants(t)).join('|')
   try {
     const regex = new RegExp(`(${pattern})`, 'gi')
     return { tokens, tokenMap, regex }
@@ -156,7 +164,9 @@ export function highlightText(text: string, query: string, paletteId: string = '
 
   return parts.map((part, idx) => {
     if (!part) return null
-    const info = tokenMap.get(part.toLowerCase())
+    // normalize ё→е for map lookup (query normalized, but text may have ё)
+    const key = part.toLowerCase().replace(/ё/g, 'е')
+    const info = tokenMap.get(key)
     if (info) {
       const c = info.color
       // Support custom hex colors via inline style if palette uses hex notation

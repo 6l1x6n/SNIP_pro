@@ -1,7 +1,9 @@
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 sqlalchemy==2.0.36
+greenlet==3.2.4
 asyncpg==0.30.0
+psycopg2-binary==2.9.10
 alembic==1.14.0
 pydantic==2.11.1
 pydantic-settings==2.8.1
@@ -11,21 +13,12 @@ beautifulsoup4==4.13.4
 lxml==5.3.0
 python-multipart==0.0.20
 PyMuPDF==1.25.5
-pdfminer.six==20221105
-pypdf==6.12.0
-pdfplumber==0.11.5
 pytesseract==0.3.13
-# embeddings
-sentence-transformers==5.0.0
-transformers==4.56.1
-torch==2.7.0
+# embeddings — fastembed (ONNX) вместо sentence-transformers+torch: ~200MB RAM vs ~800MB, те же вектора MiniLM-L12-v2 384d
+fastembed==0.8.0
 numpy==2.3.1
-# reranker
-# handled via sentence-transformers
 # search
 rank-bm25==0.2.2
-# ocr fallback
-rapidocr-onnxruntime==1.4.2
 # scheduler
 apscheduler==3.11.0
 # utils

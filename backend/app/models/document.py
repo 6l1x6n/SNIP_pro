@@ -5,6 +5,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
 from pgvector.sqlalchemy import Vector
 from app.core.db import Base
+from app.config import settings as _settings
 import enum
 
 def _utcnow():
@@ -36,12 +37,12 @@ class Document(Base):
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     pdf_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     checksum: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     replaced_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("documents.id"), nullable=True)
     owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
     chunks: Mapped[list["Chunk"]] = relationship("Chunk", back_populates="document", cascade="all, delete-orphan")
     replaced_by: Mapped["Document | None"] = relationship("Document", remote_side=[id], foreign_keys=[replaced_by_id])
@@ -61,11 +62,11 @@ class Chunk(Base):
     text: Mapped[str] = mapped_column(Text, nullable=False)
     text_tsv: Mapped[str | None] = mapped_column(Text, nullable=True)  # will use tsvector via trigger
     type: Mapped[str] = mapped_column(String(20), default="paragraph")  # paragraph|table|note
-    embedding: Mapped[list[float] | None] = mapped_column(Vector(384), nullable=True)  # dim from config
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(_settings.embedding_dim), nullable=True)  # dim from config (384 MiniLM / 768 Gemini)
     token_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     document: Mapped[Document] = relationship("Document", back_populates="chunks")
 
@@ -86,7 +87,7 @@ class DocumentVersion(Base):
     pdf_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     checksum: Mapped[str | None] = mapped_column(String(128), nullable=True)
     published_at: Mapped[date | None] = mapped_column(Date, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 class CollectorLog(Base):
     __tablename__ = "collector_logs"
@@ -98,4 +99,4 @@ class CollectorLog(Base):
     documents_found: Mapped[int] = mapped_column(Integer, default=0)
     documents_new: Mapped[int] = mapped_column(Integer, default=0)
     documents_updated: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

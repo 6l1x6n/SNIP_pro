@@ -199,7 +199,7 @@ export default function App() {
           query={search.query} setQuery={search.setQuery}
           mode={search.mode} setMode={search.setMode}
           loading={search.loading} resp={search.resp} error={search.error}
-          searchHistory={search.searchHistory} clearHistory={search.clearHistory}
+          searchHistory={search.searchHistory} clearHistory={search.clearHistory} removeHistoryItem={search.removeHistoryItem}
           showHistory={search.showHistory} setShowHistory={search.setShowHistory}
           filterType={search.filterType} setFilterType={search.setFilterType}
           filterStatus={search.filterStatus} setFilterStatus={search.setFilterStatus}

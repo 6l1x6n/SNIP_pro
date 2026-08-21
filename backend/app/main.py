@@ -58,7 +58,7 @@ async def lifespan(app: FastAPI):
                 except Exception as e:
                     logger.warning("startup owner_id migration: %s", e)
 
-                # Ensure tsvector + vector indexes
+                # Ensure tsvector + vector + trigram indexes
                 try:
                     await conn.execute(text(
                         "CREATE INDEX IF NOT EXISTS idx_chunks_tsv "
@@ -67,6 +67,14 @@ async def lifespan(app: FastAPI):
                     await conn.execute(text(
                         "CREATE INDEX IF NOT EXISTS idx_chunks_embedding "
                         "ON chunks USING hnsw (embedding vector_cosine_ops)"
+                    ))
+                    await conn.execute(text(
+                        "CREATE INDEX IF NOT EXISTS idx_chunks_text_trgm "
+                        "ON chunks USING gin (text gin_trgm_ops)"
+                    ))
+                    await conn.execute(text(
+                        "CREATE INDEX IF NOT EXISTS idx_chunks_tsv_simple "
+                        "ON chunks USING gin (to_tsvector('simple', text))"
                     ))
                 except Exception as e:
                     logger.warning("startup index error: %s", e)

@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react'
 import { useAuth } from './AuthContext'
+import { API_BASE } from '../utils/api'
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8001'
 const LS_KEY = 'snip_pinned_v1'
 
 export type PinnedItem = {

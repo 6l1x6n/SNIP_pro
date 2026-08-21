@@ -41,6 +41,7 @@ type SearchViewProps = {
   error: string | null
   searchHistory: string[]
   clearHistory: () => void
+  removeHistoryItem?: (item: string) => void
   showHistory: boolean
   setShowHistory: (v: boolean) => void
   filterType: string
@@ -77,7 +78,7 @@ type SearchViewProps = {
 export function SearchView(props: SearchViewProps) {
   const {
     query, setQuery, mode, setMode, loading, resp, error,
-    searchHistory, clearHistory, showHistory, setShowHistory,
+    searchHistory, clearHistory, removeHistoryItem, showHistory, setShowHistory,
     filterType, setFilterType, filterStatus, setFilterStatus,
     showFilters, setShowFilters, searchPinnedOnly, setSearchPinnedOnly,
     doSearch, highlightPalette, setHighlightPalette, monoHex, setMonoHex,
@@ -147,7 +148,7 @@ export function SearchView(props: SearchViewProps) {
                   <button key={h} type="button" onMouseDown={e => { e.preventDefault(); setQuery(h); setShowHistory(false); setTimeout(() => doSearch(h), 0) }} className="w-full text-left px-4 py-2.5 hover:bg-slate-50 flex items-center gap-3 text-sm">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="1.8"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/><path d="M11 8v4l2 2" /></svg>
                     <span className="flex-1 truncate text-slate-700">{h}</span>
-                    <span onMouseDown={e => { e.preventDefault(); e.stopPropagation(); const n = searchHistory.filter(x => x !== h); /* parent manages history state */ }} className="text-slate-300 hover:text-red-400 px-2">×</span>
+                    <span role="button" tabIndex={0} onMouseDown={e => { e.preventDefault(); e.stopPropagation(); if (removeHistoryItem) removeHistoryItem(h); else { const n = searchHistory.filter(x => x !== h); try{ localStorage.setItem('snip_search_hist', JSON.stringify(n)); }catch{} } }} onClick={e => { e.preventDefault(); e.stopPropagation(); if (removeHistoryItem) removeHistoryItem(h)}} className="text-slate-300 hover:text-red-400 px-2 cursor-pointer">×</span>
                   </button>
                 ))}
                 <div className="px-3 py-2 bg-slate-50 border-t border-slate-100 text-[11px] text-slate-400">OCR + гибрид (BM25+вектор+триграмма) • синонимы • опечатки • бесплатно</div>

@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import { API_BASE, authFetch } from '../utils/api'
 
 export type SearchResult = {
@@ -65,12 +65,20 @@ export function useSearch(_opts: UseSearchOptions) {
   const [showFilters, setShowFilters] = useState(false)
   const [searchPinnedOnly, setSearchPinnedOnly] = useState(false)
   const [quotaExceeded, setQuotaExceeded] = useState(false)
+  const abortRef = useRef<AbortController | null>(null)
 
   const doSearch = useCallback(async (q: string = query) => {
-    if (!q.trim()) return
+    const trimmed = q.trim()
+    if (!trimmed) return
+    // abort previous in-flight request to prevent race
+    if (abortRef.current) {
+      try { abortRef.current.abort() } catch {}
+    }
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
     setQuotaExceeded(false)
     // Update history
-    const qq = q.trim()
+    const qq = trimmed
     setSearchHistory(prev => {
       const next = [qq, ...prev.filter(x => x !== qq)].slice(0, 12)
       try { localStorage.setItem('snip_search_hist', JSON.stringify(next)) } catch {}
@@ -94,6 +102,7 @@ export function useSearch(_opts: UseSearchOptions) {
           top_k: mode === 'deep' ? 20 : 10,
           filters: Object.keys(filters).length ? filters : undefined,
         }),
+        signal: ctrl.signal as any,
       })
       if (r.status === 429) {
         const body = await r.json().catch(() => ({}))
@@ -104,11 +113,13 @@ export function useSearch(_opts: UseSearchOptions) {
       }
       if (!r.ok) throw new Error(await r.text())
       const data: SearchResponse = await r.json()
-      setResp(data)
+      // only set if not aborted
+      if (!ctrl.signal.aborted) setResp(data)
     } catch (e: any) {
+      if (e?.name === 'AbortError') return
       setError(e.message || 'Ошибка поиска')
     } finally {
-      setLoading(false)
+      if (abortRef.current === ctrl) setLoading(false)
     }
   }, [query, mode, filterType, filterStatus])
 
@@ -117,13 +128,21 @@ export function useSearch(_opts: UseSearchOptions) {
     try { localStorage.removeItem('snip_search_hist') } catch {}
   }, [])
 
+  const removeHistoryItem = useCallback((item: string) => {
+    setSearchHistory(prev => {
+      const next = prev.filter(x => x !== item)
+      try { localStorage.setItem('snip_search_hist', JSON.stringify(next)) } catch {}
+      return next
+    })
+  }, [])
+
   return {
     query, setQuery,
     mode, setMode,
     loading,
     resp, setResp,
     error,
-    searchHistory, clearHistory,
+    searchHistory, clearHistory, removeHistoryItem,
     showHistory, setShowHistory,
     filterType, setFilterType,
     filterStatus, setFilterStatus,

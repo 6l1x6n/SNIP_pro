@@ -38,6 +38,7 @@ def normalize_query(q: str) -> str:
     return q
 
 def expand_with_synonyms(query: str) -> str:
+    """Legacy: joins expansions into one string (for embed fallback). Use expand_queries_list for search."""
     nq = normalize_query(query)
     expanded = [nq]
     for k, syns in SYNONYMS.items():
@@ -46,6 +47,32 @@ def expand_with_synonyms(query: str) -> str:
                 expanded.append(nq.replace(k, s))
     # dedup
     return " ".join(list(dict.fromkeys(expanded))[:3])
+
+
+def expand_queries_list(query: str, max_variants: int = 3) -> List[str]:
+    """Return list of separate query variants for OR-search (deep mode).
+    e.g. 'ширина коридора' -> ['ширина коридора', 'минимальная ширина коридора', 'ширина прохода']
+    """
+    nq = normalize_query(query)
+    expanded: List[str] = [nq]
+    for k, syns in SYNONYMS.items():
+        if k in nq:
+            for s in syns[:2]:
+                variant = nq.replace(k, s)
+                if variant not in expanded:
+                    expanded.append(variant)
+                if len(expanded) >= max_variants:
+                    break
+        if len(expanded) >= max_variants:
+            break
+    return expanded[:max_variants]
+
+
+def _build_tsquery_variants(expanded: List[str]) -> str:
+    """Build plainto_tsquery OR string: not used directly, we iterate variants instead.
+    Kept for logging / debug.
+    """
+    return " | ".join(expanded)
 
 def relevance_label(score: float) -> Tuple[int, str]:
     """
@@ -109,21 +136,46 @@ class HybridSearchService:
         start = time.time()
 
         is_deep = mode == "deep"
-        # 1. Prepare query — deep expands synonyms, fast uses original
+        # 1. Prepare query — deep expands synonyms into separate OR variants, fast uses original
         norm_q = normalize_query(query)
-        norm_q_search = expand_with_synonyms(query) if is_deep else norm_q
-        # For vector, deep uses synonym-expanded query
-        vector_query = expand_with_synonyms(query) if is_deep else query
+        expanded_queries = expand_queries_list(query, max_variants=3) if is_deep else [norm_q]
+        # For vector, deep embeds multiple variants and averages (better than concatenated string)
         # Limits per mode
         bm25_limit = settings.top_k_bm25_deep if is_deep else settings.top_k_bm25_fast
         vector_limit = settings.top_k_vector_deep if is_deep else settings.top_k_vector_fast
         rerank_limit_cfg = settings.top_k_rerank_deep if is_deep else settings.top_k_rerank_fast
-        # 2. Embed query
-        try:
-            q_emb = await self.embedder.embed_query(vector_query)
-        except Exception as e:
-            logger.warning("embed error: %s", e)
-            q_emb = None
+        # 2. Embed query — deep: embed each variant and average
+        q_emb = None
+        if is_deep and len(expanded_queries) > 1:
+            try:
+                embs = []
+                for vq in expanded_queries:
+                    e = await self.embedder.embed_query(vq)
+                    if e is not None:
+                        embs.append(np.array(e, dtype=np.float32))
+                if embs:
+                    # average normalized embeddings
+                    avg = np.mean(embs, axis=0)
+                    # re-normalize to unit length (cosine space)
+                    norm = np.linalg.norm(avg)
+                    if norm > 0:
+                        avg = avg / norm
+                    q_emb = avg.tolist()
+                else:
+                    q_emb = await self.embedder.embed_query(norm_q)
+            except Exception as e:
+                logger.warning("embed deep error: %s", e)
+                try:
+                    q_emb = await self.embedder.embed_query(norm_q)
+                except Exception as e2:
+                    logger.warning("embed fallback error: %s", e2)
+                    q_emb = None
+        else:
+            try:
+                q_emb = await self.embedder.embed_query(expanded_queries[0])
+            except Exception as e:
+                logger.warning("embed error: %s", e)
+                q_emb = None
 
         # 3. BM25 / FTS search (pg) - use nested transactions to avoid abort
         # Build where clause for filters — whitelisted columns only
@@ -132,7 +184,9 @@ class HybridSearchService:
 
         where_sql = (" AND " + " AND ".join(where_clauses)) if where_clauses else ""
 
-        fts_sql = f"""
+        # BM25: for deep we run each variant separately and merge (OR logic)
+        # This fixes the bug where plainto_tsquery on concatenated synonyms used AND and returned 0 rows
+        fts_sql_template = f"""
             SELECT c.id, c.document_id, c.paragraph, c.section, c.chapter, c.page, c.text, c.type,
                    d.number as document_number, d.title as document_title, d.type as document_type, d.status, d.source_url, d.publication_date, d.last_checked_at,
                    ts_rank_cd(to_tsvector('russian', c.text), plainto_tsquery('russian', :q)) as bm25_score
@@ -142,51 +196,73 @@ class HybridSearchService:
             ORDER BY bm25_score DESC
             LIMIT :limit
         """
-        params_bm25 = dict(params)
-        params_bm25["q"] = norm_q_search if is_deep else norm_q
-        params_bm25["limit"] = bm25_limit
-        bm25_results = []
+        bm25_results: List[Dict] = []
+        bm25_by_id: Dict[str, Dict] = {}
         if len(norm_q.split()) >= 1:
-            try:
-                async with db.begin_nested():
-                    rows = await db.execute(text(fts_sql), params_bm25)
-                    for r in rows.mappings().all():
-                        d = dict(r)
-                        d["bm25_score"] = float(d["bm25_score"] or 0)
-                        bm25_results.append(d)
-            except Exception as e:
-                logger.warning("bm25 error: %s", e)
+            for q_variant in expanded_queries:
+                params_bm25 = dict(params)
+                params_bm25["q"] = q_variant
+                # for deep we split limit across variants to keep total bounded, but keep at least limit
+                per_variant_limit = bm25_limit if not is_deep else max(20, bm25_limit // len(expanded_queries) + 5)
+                params_bm25["limit"] = per_variant_limit
                 try:
-                    await db.rollback()
-                except:
-                    pass
+                    async with db.begin_nested():
+                        rows = await db.execute(text(fts_sql_template), params_bm25)
+                        for r in rows.mappings().all():
+                            d = dict(r)
+                            d["bm25_score"] = float(d["bm25_score"] or 0)
+                            cid = str(d["id"])
+                            # keep max bm25_score if same chunk found via multiple variants
+                            if cid not in bm25_by_id or d["bm25_score"] > bm25_by_id[cid]["bm25_score"]:
+                                bm25_by_id[cid] = d
+                except Exception as e:
+                    logger.warning("bm25 error for q='%s': %s", q_variant[:60], e)
+                    try:
+                        await db.rollback()
+                    except:
+                        pass
+            # merge and sort by bm25_score desc, trim to bm25_limit
+            bm25_results = sorted(bm25_by_id.values(), key=lambda x: x["bm25_score"], reverse=True)[:bm25_limit]
 
-        # Fallback via ILIKE if no results
+        # Fallback via ILIKE if no results — fixed: OR per token instead of whole concatenated phrase
         if not bm25_results and len(norm_q) >= 3:
-            try:
-                async with db.begin_nested():
-                    params2 = dict(params)
-                    params2["q_like"] = (norm_q_search if is_deep else norm_q)[:100]
-                    params2["limit"] = bm25_limit
-                    rows = await db.execute(text(f"""
-                        SELECT c.id, c.document_id, c.paragraph, c.section, c.chapter, c.page, c.text, c.type,
-                               d.number as document_number, d.title as document_title, d.type as document_type, d.status, d.source_url, d.publication_date, d.last_checked_at,
-                               0.5 as bm25_score
-                        FROM chunks c
-                        JOIN documents d ON d.id = c.document_id
-                        WHERE c.text ILIKE '%' || :q_like || '%' {where_sql}
-                        LIMIT :limit
-                    """), params2)
-                    for r in rows.mappings().all():
-                        d = dict(r)
-                        d["bm25_score"] = float(d["bm25_score"] or 0)
-                        bm25_results.append(d)
-            except Exception as e:
-                logger.warning("fallback error: %s", e)
+            # tokenise original normalized query (ignore very short tokens)
+            q_tokens = [t for t in norm_q.split() if len(t) >= 3][:4]
+            # also add synonym tokens for deep
+            if is_deep:
+                for syn_q in expanded_queries[1:]:
+                    for t in syn_q.split():
+                        if len(t) >= 3 and t not in q_tokens and len(q_tokens) < 6:
+                            q_tokens.append(t)
+            if q_tokens:
                 try:
-                    await db.rollback()
-                except:
-                    pass
+                    async with db.begin_nested():
+                        # Build OR ILIKE conditions
+                        ilike_conds = " OR ".join([f"c.text ILIKE :q_like_{i}" for i in range(len(q_tokens))])
+                        params2 = dict(params)
+                        for i, tok in enumerate(q_tokens):
+                            params2[f"q_like_{i}"] = f"%{tok}%"
+                        params2["limit"] = bm25_limit
+                        rows = await db.execute(text(f"""
+                            SELECT c.id, c.document_id, c.paragraph, c.section, c.chapter, c.page, c.text, c.type,
+                                   d.number as document_number, d.title as document_title, d.type as document_type, d.status, d.source_url, d.publication_date, d.last_checked_at,
+                                   0.5 as bm25_score
+                            FROM chunks c
+                            JOIN documents d ON d.id = c.document_id
+                            WHERE ({ilike_conds}) {where_sql}
+                            LIMIT :limit
+                        """), params2)
+                        for r in rows.mappings().all():
+                            d = dict(r)
+                            d["bm25_score"] = float(d["bm25_score"] or 0)
+                            # dedup via bm25_by_id logic already, but fallback is empty so just append
+                            bm25_results.append(d)
+                except Exception as e:
+                    logger.warning("fallback error: %s", e)
+                    try:
+                        await db.rollback()
+                    except:
+                        pass
 
         # 4. Vector search
         vector_results = []
@@ -226,9 +302,10 @@ class HybridSearchService:
                     pass
 
         # 4.5 Trigram fallback for typos (бесплатно, pg_trgm) — если BM25 и вектор пустые
+        # Fixed: pass filters so we don't leak expired/replaced docs, and respect owner_id
         if not bm25_results and not vector_results and len(norm_q) >= 4:
             try:
-                trig_rows = await self.trigram_search(db, norm_q, limit=bm25_limit)
+                trig_rows = await self.trigram_search(db, norm_q, limit=bm25_limit, filters=filters)
                 for r in trig_rows:
                     # trigram returns sim, map to bm25_score
                     r = dict(r)
@@ -249,7 +326,7 @@ class HybridSearchService:
                 except:
                     pass
 
-        # 5. Fusion via RRF
+        # 5. Fusion via RRF — fixed: normalize bm25/vector before boosting, balanced weights
         # Create maps id -> rank
         bm25_rank = {str(r["id"]): i+1 for i, r in enumerate(bm25_results)}
         vec_rank = {str(r["id"]): i+1 for i, r in enumerate(vector_results)}
@@ -262,24 +339,36 @@ class HybridSearchService:
             if str(r["id"]) not in id_to_rec:
                 id_to_rec[str(r["id"])] = r
             else:
-                # merge scores
-                id_to_rec[str(r["id"])]["vector_score"] = r.get("vector_score", 0)
-                # keep bm25_score already
+                # merge scores: keep max bm25, add vector
+                # ensure both scores present
+                existing = id_to_rec[str(r["id"])]
+                existing["vector_score"] = r.get("vector_score", 0)
+                # keep higher bm25 if vector result also had bm25 (rare)
+                if r.get("bm25_score"):
+                    existing["bm25_score"] = max(existing.get("bm25_score", 0), r.get("bm25_score", 0))
 
-        # compute RRF score
+        # normalize bm25/vector for fair weighting
+        max_bm = max((r.get("bm25_score", 0) or 0 for r in id_to_rec.values()), default=1)
+        max_vec = max((r.get("vector_score", 0) or 0 for r in id_to_rec.values()), default=1)
+        if max_bm == 0:
+            max_bm = 1
+        if max_vec == 0:
+            max_vec = 1
+
+        # compute RRF score with normalized boosts
         fused = []
         for cid in all_ids:
             rrf = 0.0
+            rec = id_to_rec[cid]
             if cid in bm25_rank:
                 rrf += 1.0 / (RRF_K + bm25_rank[cid])
-                # also weight by bm25_score normalized? simple boost
-                rec = id_to_rec[cid]
-                rrf += rec.get("bm25_score", 0) * 0.2
+                bm_norm = (rec.get("bm25_score", 0) or 0) / max_bm
+                rrf += bm_norm * 0.15
             if cid in vec_rank:
                 rrf += 1.0 / (RRF_K + vec_rank[cid])
-                rec = id_to_rec[cid]
-                rrf += rec.get("vector_score", 0) * 0.3
-            rec = id_to_rec[cid]
+                vec_norm = (rec.get("vector_score", 0) or 0) / max_vec
+                # vector gets slightly higher weight (semantic)
+                rrf += vec_norm * 0.20
             rec["rrf_score"] = rrf
             fused.append(rec)
 
@@ -291,19 +380,19 @@ class HybridSearchService:
         # Take top rerank candidates (larger pool for deep)
         candidates = fused[:rerank_limit_cfg]
 
-        # 6. Reranker (optional, lightweight cross-encoder if available, else use normalized rrf)
-        # For MVP: if sentence-transformers cross-encoder available, use it; else approximate
-        # We'll attempt to load lightweight reranker via embedder similarity refine?
-        # Simple: if we have both scores, combine; otherwise rrf only
-        # Normalize rrf to 0..1 for relevance label
+        # 6. Reranker (optional) — normalize rrf to 0..1 for relevance label
         max_rrf = max(c["rrf_score"] for c in candidates) if candidates else 1
+        if max_rrf == 0:
+            max_rrf = 1
         for c in candidates:
             # normalized fusion
             norm = c["rrf_score"] / max_rrf if max_rrf > 0 else 0
-            # blend vector_score if exists
-            if "vector_score" in c:
-                norm = 0.6 * norm + 0.4 * c["vector_score"]
-            c["fusion_score"] = float(norm)
+            # blend vector_score if exists (boost high semantic matches)
+            if "vector_score" in c and c.get("vector_score"):
+                vec_n = (c.get("vector_score", 0) or 0) / max_vec
+                # weighted blend: 55% rrf norm + 45% vector
+                norm = 0.55 * norm + 0.45 * vec_n
+            c["fusion_score"] = float(max(0.0, min(1.0, norm)))
 
         # If deep mode and we have cross-encoder, we could rerank more accurately (deferred to LLM rerank)
         # For now sort by fusion_score
@@ -323,13 +412,21 @@ class HybridSearchService:
 
         return top
 
-    async def trigram_search(self, db: AsyncSession, query: str, limit: int = 10) -> List[Dict]:
-        # For typos: use pg_trgm similarity
-        sql = text("""
-            SELECT c.id, c.text, c.paragraph, c.page, d.number as document_number, similarity(c.text, :q) as sim
+    async def trigram_search(self, db: AsyncSession, query: str, limit: int = 10, filters: Dict = None) -> List[Dict]:
+        # For typos: use pg_trgm similarity — fixed to respect filters (status, owner_id, etc.)
+        filters = filters or {}
+        where_clauses, params = self._build_where_clause(filters)
+        where_sql = (" AND " + " AND ".join(where_clauses)) if where_clauses else ""
+        # lower threshold to 0.15 for short typos like "ширна"
+        sql = text(f"""
+            SELECT c.id, c.document_id, c.text, c.paragraph, c.section, c.chapter, c.page, c.type,
+                   d.number as document_number, d.title as document_title, d.type as document_type, d.status, d.source_url, d.publication_date, d.last_checked_at,
+                   similarity(c.text, :q) as sim
             FROM chunks c JOIN documents d ON d.id=c.document_id
-            WHERE similarity(c.text, :q) > 0.2
+            WHERE similarity(c.text, :q) > 0.15 {where_sql}
             ORDER BY sim DESC LIMIT :limit
         """)
-        rows = await db.execute(sql, {"q": query, "limit": limit})
+        params["q"] = query
+        params["limit"] = limit
+        rows = await db.execute(sql, params)
         return [dict(r) for r in rows.mappings().all()]

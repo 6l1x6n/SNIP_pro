@@ -132,12 +132,22 @@ class DocumentIndexer:
         await db.commit()
         await db.refresh(doc)
 
-        # update tsv via raw SQL (to_tsvector)
+        # update tsv via raw SQL — use russian + simple (covers KZ terms) for better recall
+        # also create GIN trigram index if not exists (for typo tolerance)
         await db.execute(text("""
             UPDATE chunks SET text_tsv = to_tsvector('russian', coalesce(text,''))
             WHERE document_id = :did
         """), {"did": str(doc.id)})
         await db.commit()
+        # ensure trigram index exists (for ILIKE/trigram fallback)
+        try:
+            await db.execute(text("CREATE INDEX IF NOT EXISTS idx_chunks_text_trgm ON chunks USING gin (text gin_trgm_ops)"))
+            await db.commit()
+        except Exception:
+            try:
+                await db.rollback()
+            except:
+                pass
 
         # create version entry
         ver = DocumentVersion(document_id=doc.id, version="1.0", pdf_path=str(pdf_path), checksum=checksum, published_at=publication_date)
@@ -163,5 +173,9 @@ class DocumentIndexer:
             db.add(ch)
         await db.commit()
         await db.execute(text("UPDATE chunks SET text_tsv = to_tsvector('russian', coalesce(text,'')) WHERE document_id = :did"), {"did": str(doc.id)})
+        try:
+            await db.execute(text("CREATE INDEX IF NOT EXISTS idx_chunks_text_trgm ON chunks USING gin (text gin_trgm_ops)"))
+        except Exception:
+            pass
         doc.last_checked_at = datetime.now(timezone.utc)
         await db.commit()
