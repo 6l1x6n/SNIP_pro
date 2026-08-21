@@ -6,10 +6,10 @@ compatibility_date = "2026-01-15"
 [[d1_databases]]
 binding = "DB"
 database_name = "snip-db"
-database_id = "PLACEHOLDER_RUN_WRANGLER_D1_CREATE"
+database_id = "da22e294-4ec2-4c9c-82b6-b6201c78d147"
 
 [vars]
-GROQ_MODEL = "qwen/qwen3.6-27b"
+GROQ_MODEL = "openai/gpt-oss-120b"
 EMBED_MODEL = "gemini-embedding-001"
 INDEX_BASE_URL = "https://snippy-llm.pages.dev/index"
 ALLOWED_ORIGINS = "https://snippy-llm.pages.dev,https://*.pages.dev,http://localhost:5173"

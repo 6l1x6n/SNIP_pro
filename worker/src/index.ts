@@ -193,12 +193,23 @@ ${contextText}
       messages: [{ role: "user", content: prompt }],
       temperature: 0.1,
       max_tokens: maxTokens,
-      response_format: { type: "json_object" },
+      reasoning_effort: "low",
     }),
   });
   if (!r.ok) throw new Error(`groq ${r.status}: ${(await r.text()).slice(0, 200)}`);
   const d: any = await r.json();
-  return JSON.parse(d.choices[0].message.content);
+  let text: string = d.choices?.[0]?.message?.content ?? "";
+  // qwen иногда вставляет <think>...</think> — срезаем
+  text = text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+  // защитный парсинг JSON из текста
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start === -1 || end === -1) return { answer: "Не удалось разобрать ответ модели.", is_grounded: false };
+  try {
+    return JSON.parse(text.slice(start, end + 1));
+  } catch {
+    return { answer: text.slice(0, 400), is_grounded: false };
+  }
 }
 
 function verifyGrounded(answer: any, contexts: string[]): boolean {
