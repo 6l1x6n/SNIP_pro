@@ -1,0 +1,47 @@
+# Render Blueprint: SNIP_pro backend (FastAPI + Gemini embeddings)
+# Секреты с sync:false вводятся вручную в дашборде при первом деплое и НЕ хранятся в git.
+services:
+  - type: web
+    name: snip-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    region: frankfurt
+    plan: free
+    branch: master
+    healthCheckPath: /api/health
+    envVars:
+      # --- секреты (заполнить в UI) ---
+      - key: DATABASE_URL
+        sync: false
+      - key: SYNC_DATABASE_URL
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      # --- приложение ---
+      - key: EMBEDDING_PROVIDER
+        value: gemini
+      - key: GROQ_MODEL
+        value: qwen/qwen3.6-27b
+      - key: OLLAMA_HOST
+        value: https://api.groq.com/openai/v1
+      - key: OLLAMA_MODEL
+        value: qwen/qwen3.6-27b
+      - key: CORS_ORIGINS
+        value: https://snippy-llm.pages.dev,https://*.pages.dev,https://*.workers.dev,http://localhost:5173
+      - key: QUOTA_ENABLED
+        value: "1"
+      - key: QUOTA_ANON_LIMIT
+        value: "30"
+      - key: QUOTA_REGISTERED_LIMIT
+        value: "200"
+      - key: DISABLE_DB
+        value: "0"
+      - key: ENABLE_COLLECTOR
+        value: "0"
+      - key: ADMIN_EMAIL
+        value: postalarchive@gmail.com
