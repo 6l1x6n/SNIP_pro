@@ -139,13 +139,18 @@ export async function askAI(query: string, mode: 'fast' | 'deep', chunkIds: stri
   }
 }
 
-export async function fetchCredits(): Promise<{ used: number; limit: number } | null> {
+export async function fetchCredits(): Promise<{ remaining: number; limit: number } | null> {
   try {
     const r = await authFetch(`${WORKER_BASE}/api/credits`)
     if (!r.ok) return null
     const d = await r.json()
-    return { used: d.limit - d.used, limit: d.limit }
+    return { remaining: Math.max(0, d.limit - d.used), limit: d.limit }
   } catch {
     return null
   }
+}
+
+/** Диспетчер обновления бейджа кредитов (после /ask или вручную). */
+export function dispatchCredits(remaining?: number | null, limit?: number | null): void {
+  window.dispatchEvent(new CustomEvent('snip:credits', { detail: { remaining, limit } }))
 }

@@ -1,7 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '../context/AuthContext'
-import { useBaskets } from '../context/BasketContext'
-import { BasketBar } from './BasketBar'
 import { HighlightPaletteSettings } from './HighlightPaletteSettings'
 import type { PaletteId } from '../utils/highlight'
 import { loadQuickExamples, saveQuickExamples, resetQuickExamples, QUICK_EXAMPLES_MAX } from '../utils/examples'
@@ -73,7 +71,6 @@ export function ProfilePage({ stats, onLogout, highlightPalette, setHighlightPal
   initialSection?: string | null,
 }) {
   const { user, logout } = useAuth()
-  const { baskets, assignments, retentionDays, setRetentionDays } = useBaskets() as any
   const [section, setSection] = useState<SectionId>((initialSection as SectionId) || 'overview')
 
   // Navigate to a section when requested from outside (e.g. the profile dropdown menu)
@@ -232,8 +229,8 @@ export function ProfilePage({ stats, onLogout, highlightPalette, setHighlightPal
               <div className="mt-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
                 <div className="bg-slate-50 rounded-xl p-4 border border-slate-200"><div className="text-xs text-slate-500">Документы</div><div className="text-xl font-bold text-slate-900 mt-1">{stats?.total_documents ?? '—'}</div><div className="text-xs text-slate-400 mt-1">всего</div></div>
                 <div className="bg-emerald-50 rounded-xl p-4 border border-emerald-200"><div className="text-xs text-emerald-700">Фрагменты</div><div className="text-xl font-bold text-emerald-700 mt-1">{stats?.total_chunks ?? '—'}</div><div className="text-xs text-emerald-600 mt-1">чанков</div></div>
-                <div className="bg-blue-50 rounded-xl p-4 border border-blue-200"><div className="text-xs text-blue-700">ИИ</div><div className="text-sm font-bold text-blue-700 mt-1">RAG • BM25 + Vector 384</div><div className="text-xs text-blue-600 mt-1">реранк + LLM</div></div>
-                <div className="bg-amber-50 rounded-xl p-4 border border-amber-200"><div className="text-xs text-amber-800">Квота</div><div className="text-sm font-bold text-amber-800 mt-1">30 / мин</div><div className="text-xs text-amber-700 mt-1">30 запросов в минуту • сброс 60с • No source → No claim</div></div>
+                <div className="bg-blue-50 rounded-xl p-4 border border-blue-200"><div className="text-xs text-blue-700">ИИ</div><div className="text-sm font-bold text-blue-700 mt-1">Gemini 768d • Hybrid RRF K=60</div><div className="text-xs text-blue-600 mt-1">Groq LLM с дословной цитатой</div></div>
+                <div className="bg-emerald-50 rounded-xl p-4 border border-emerald-200"><div className="text-xs text-emerald-800">Поиск</div><div className="text-sm font-bold text-emerald-800 mt-1">Бесплатный</div><div className="text-xs text-emerald-700 mt-1">работает в браузере • No source → No claim</div></div>
               </div>
               <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
                 <div className="bg-slate-50 rounded-xl p-4 border border-slate-200">
@@ -242,9 +239,9 @@ export function ProfilePage({ stats, onLogout, highlightPalette, setHighlightPal
                   <div className="text-[11px] text-slate-500 mt-1">BM25 (russian) + pgvector cosine • триграмма для опечаток</div>
                 </div>
                 <div className="bg-slate-50 rounded-xl p-4 border border-slate-200">
-                  <div className="text-xs font-semibold text-slate-700">Корзины</div>
-                  <div className="text-sm text-slate-900 mt-1">{baskets?.length ?? 0} шт. • {Object.keys(assignments||{}).length} доков в корзинах</div>
-                  <div className="text-[11px] text-slate-500 mt-1">X дней хранение • личная</div>
+                  <div className="text-xs font-semibold text-slate-700">ИИ-кредиты</div>
+                  <div className="text-sm text-slate-900 mt-1">{user ? '5 ответов/день' : '3 ответа/день'} • 10 кредитов = 1 ИИ-ответ</div>
+                  <div className="text-[11px] text-slate-500 mt-1">Сброс каждый день в 00:00 • поиск безлимитный</div>
                 </div>
               </div>
               {stats?.last_collector && (
@@ -414,30 +411,14 @@ export function ProfilePage({ stats, onLogout, highlightPalette, setHighlightPal
             </div>
 
             <div className="bg-white rounded-2xl border border-slate-200 p-5">
-              <h3 className="font-semibold text-slate-900">Корзины — редактор</h3>
-              <p className="text-xs text-slate-500 mt-1">Перетаскивайте документы на корзину • цвет hex на палитре</p>
-              <div className="mt-3"><BasketBar allowCreate /></div>
-              <div className="mt-4 space-y-2">
-                {baskets.map((b:any)=> (
-                  <div key={b.id} className="flex items-center gap-3 p-3 rounded-xl border border-slate-200 bg-white">
-                    <span className="w-8 h-8 rounded-xl border border-slate-200 shrink-0" style={{ backgroundColor: b.color }} />
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium text-slate-900 truncate">{b.name}</div>
-                      <div className="text-xs font-mono text-slate-500">{b.color} • {Object.values(assignments).filter((v:any)=>v===b.id).length} док.</div>
-                    </div>
-                    <span className="text-xs px-2 py-1 rounded-full bg-slate-100 border border-slate-200">{b.id.slice(0,4)}</span>
-                  </div>
-                ))}
-                {baskets.length===0 && <div className="text-xs text-slate-400 p-3 border border-dashed rounded-xl text-center">Корзин нет — создайте выше</div>}
+              <h3 className="font-semibold text-slate-900">Кредиты</h3>
+              <p className="text-xs text-slate-500 mt-1">10 кредитов = 1 ИИ-ответ с дословной цитатой. Поиск по нормам — бесплатный и безлимитный.</p>
+              <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
+                <div className="p-3 rounded-xl border border-slate-200 bg-slate-50"><div className="text-slate-500">Гость</div><div className="font-semibold text-slate-900 mt-0.5">30 кредитов / день</div></div>
+                <div className="p-3 rounded-xl border border-blue-200 bg-blue-50"><div className="text-blue-700">Зарегистрирован</div><div className="font-semibold text-blue-900 mt-0.5">50 кредитов / день</div></div>
               </div>
-              <div className="mt-4 p-3 rounded-xl bg-amber-50 border border-amber-200">
-                <div className="text-xs font-semibold text-amber-800">Хранение в корзине</div>
-                <div className="text-xs text-amber-700 mt-1">Документ в корзине живёт X дней, затем удаляется из БД.</div>
-                <label className="mt-3 flex items-center gap-2 text-sm">
-                  <span className="text-slate-700">X дней:</span>
-                  <input type="number" min={1} max={365} value={retentionDays} onChange={e=> setRetentionDays(parseInt(e.target.value||'30',10))} className="w-20 px-2 py-1 rounded-lg border border-amber-200 text-sm" />
-                  <span className="text-xs text-slate-500">по умолчанию 30</span>
-                </label>
+              <div className="mt-3 p-3 rounded-xl bg-indigo-50 border border-indigo-200 text-xs text-indigo-800">
+                Подписка с увеличенным лимитом — скоро.
               </div>
             </div>
           </div>

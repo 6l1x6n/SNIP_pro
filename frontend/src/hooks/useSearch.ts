@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from 'react'
-import { hybridSearchLegacy, askAI } from '../search/searchClient'
+import { hybridSearchLegacy, askAI, dispatchCredits } from '../search/searchClient'
 
 export type SearchResult = {
   chunk_id: string
@@ -63,7 +63,6 @@ export function useSearch(_opts: UseSearchOptions) {
   const [filterType, setFilterType] = useState('')
   const [filterStatus, setFilterStatus] = useState('active')
   const [showFilters, setShowFilters] = useState(false)
-  const [searchPinnedOnly, setSearchPinnedOnly] = useState(false)
   const [quotaExceeded, setQuotaExceeded] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
 
@@ -119,12 +118,14 @@ export function useSearch(_opts: UseSearchOptions) {
           const ask = await askAI(trimmed, mode, results.slice(0, 5).map(r => r.chunk_id))
           if (!ctrl.signal.aborted) {
             setResp({ ...respBase, answer: ask.answer })
+            if (ask.creditsRemaining != null) dispatchCredits(ask.creditsRemaining, ask.creditsLimit)
           }
         } catch (e: any) {
           if (e?.quotaExceeded) {
             if (!ctrl.signal.aborted) {
               setQuotaExceeded(true)
               setError(e.message)
+              dispatchCredits(0, null)
             }
             return
           }
@@ -163,7 +164,6 @@ export function useSearch(_opts: UseSearchOptions) {
     filterType, setFilterType,
     filterStatus, setFilterStatus,
     showFilters, setShowFilters,
-    searchPinnedOnly, setSearchPinnedOnly,
     doSearch,
     quotaExceeded,
     setQuotaExceeded,

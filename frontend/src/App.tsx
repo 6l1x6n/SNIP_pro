@@ -2,23 +2,15 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useAuth } from './context/AuthContext'
 import { LoginForm, RegisterForm } from './components/AuthForms'
-import { API_BASE } from './utils/api'
-import { usePinned } from './context/PinnedContext'
-import { useBaskets } from './context/BasketContext'
-import { PinnedDropdown } from './components/PinnedDropdown'
-import { FlyAnimation } from './components/FlyAnimation'
-import { GlobalFileDrop } from './components/GlobalFileDrop'
-import { TrashBar } from './components/TrashBar'
 import { useToast } from './components/Toast'
-import { stringToColor } from './utils/badges'
 import { openPdf as _openPdf } from './utils/pdf'
 import { useSearch } from './hooks/useSearch'
-import { useUpload } from './hooks/useUpload'
 import { useDocuments } from './hooks/useDocuments'
 import { SearchView } from './views/SearchView'
 import { DocsView } from './views/DocsView'
 import { ProfileView } from './views/ProfileView'
 import { ProfileMenu } from './components/ProfileMenu'
+import { CreditsBadge } from './components/CreditsBadge'
 import type { PaletteId } from './utils/highlight'
 import { listPaletteOptions } from './utils/highlight'
 // --- NEW FEATURES ---
@@ -27,12 +19,9 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { ShortcutsModal } from './components/ShortcutsModal'
 import { QuickSearch } from './components/QuickSearch'
 import { trackSearch } from './utils/analytics'
-import { resultsToMarkdown, downloadAsFile, copyToClipboard } from './utils/exportUtils'
 
 export default function App() {
-  const { user, logout, authFetch } = useAuth()
-  const { items: pinnedItems, isPinned, isPinnedChunk, setDocsTabRef } = usePinned() as any
-  const { baskets, activeBasketId, setActiveBasketId, assignments, localDocs, addLocalFiles, setIsDragging: setBasketDragging, setDraggedDocId } = useBaskets() as any
+  const { user, logout } = useAuth()
   const { showToast } = useToast()
 
   const [tab, setTab] = useState<'search' | 'docs' | 'settings' | 'profile'>('search')
@@ -46,8 +35,6 @@ export default function App() {
   const [monoHex, setMonoHex] = useState<string>(() => {
     try { const v = localStorage.getItem('snip_highlight_mono_hex'); if (v && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(v)) return v; return '#fde68a' } catch { return '#fde68a' }
   })
-  const docsTabRef = useRef<HTMLButtonElement>(null)
-  const [showPinnedOnly, setShowPinnedOnly] = useState(false)
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login')
   const [showAuth, setShowAuth] = useState(false)
 
@@ -63,11 +50,6 @@ export default function App() {
   const search = useSearch({ user, setShowAuth, setAuthMode })
   const docs = useDocuments({ user, filterStatus: search.filterStatus })
 
-  const upload = useUpload({
-    user, activeBasketId, addLocalFiles, showToast,
-    loadDocs: docs.loadDocs, loadCollector: docs.loadCollector,
-  })
-
   // Track analytics on search
   const doSearchTracked = useCallback((q?: string) => {
     const queryStr = q || search.query
@@ -75,7 +57,7 @@ export default function App() {
     search.doSearch(q)
   }, [search])
 
-  // --- Keyboard shortcuts (after all state/hooks are defined) ---
+  // --- Keyboard shortcuts ---
   useKeyboardShortcuts({
     onSearchFocus: () => { setTab('search'); setTimeout(() => searchInputRef.current?.focus(), 100) },
     onEscape: () => {
@@ -91,62 +73,28 @@ export default function App() {
   useEffect(() => { try { localStorage.setItem('snip_highlight_palette', highlightPalette) } catch {} }, [highlightPalette])
   useEffect(() => { try { localStorage.setItem('snip_highlight_mono_hex', monoHex) } catch {} }, [monoHex])
   useEffect(() => {
-    // @ts-ignore
-    setDocsTabRef(docsTabRef as any)
-  }, [])
-  useEffect(() => {
     if (tab === 'docs') docs.loadDocs()
-    if (tab === 'settings' || tab === 'profile') docs.loadCollector()
-  }, [tab, search.filterStatus, user])
+  }, [tab, search.filterStatus])
 
   // --- Handlers ---
   const openPdf = useCallback((docId: string, page?: number | null) => {
     _openPdf(docId, page, (msg) => showToast(msg, 'error'))
   }, [showToast])
 
-  const triggerCollector = useCallback(async () => {
-    // Коллектор отключён: пакет норм фиксированный, обновление = пересборка индекса
-    docs.loadCollector()
-  }, [docs.loadCollector])
-
-  // Listen for basket files event
-  useEffect(() => {
-    const onBasketFiles = (e: Event) => {
-      const d = (e as CustomEvent).detail as { files: File[], basketId: string | null }
-      if (d?.files?.length) upload.handleBasketFiles(d.files, d.basketId ?? activeBasketId)
-    }
-    window.addEventListener('snip:basket-files' as any, onBasketFiles as any)
-    return () => window.removeEventListener('snip:basket-files' as any, onBasketFiles as any)
-  }, [upload.handleBasketFiles, activeBasketId])
-
-  // --- Auth gate ---
-  const AuthGate = () => (
-    <div className="max-w-md mx-auto mt-8 bg-white rounded-2xl border border-slate-200 p-6 shadow-lg">
-      <div className="text-center mb-4">
-        <img src="/logo-64.png" alt="snippy.llm" className="w-12 h-12 mx-auto rounded-xl object-cover border border-slate-200 bg-white" />
-        <h3 className="font-semibold text-slate-900 mt-3">Войдите чтобы продолжить</h3>
-        <p className="text-xs text-slate-500 mt-1">Бесплатно для 10+ пользователей. Данные на snippy.llm, защищено JWT.</p>
-      </div>
-      {authMode === 'login' ? <LoginForm onSwitch={() => setAuthMode('register')} onSuccess={() => setShowAuth(false)} /> : <RegisterForm onSwitch={() => setAuthMode('login')} onSuccess={() => setShowAuth(false)} />}
-    </div>
-  )
-
   // --- Render ---
   return (
-    <div className="min-h-screen flex flex-col">
-      <GlobalFileDrop />
-      <TrashBar />
+    <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-slate-950">
 
       {/* Header */}
-      <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700 sticky top-0 z-20">
+      <header className="bg-white/90 dark:bg-slate-900/90 backdrop-blur border-b border-slate-200 dark:border-slate-800 sticky top-0 z-20">
         <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between gap-2 flex-nowrap overflow-visible">
           <div className="flex items-center gap-3 min-w-0 shrink-0">
-            <img src="/logo-64.png" srcSet="/logo-64.png 1x, /logo-192.png 2x" alt="snippy.llm" className="w-9 h-9 rounded-xl object-cover shrink-0 border border-slate-200 bg-white" />
+            <img src="/logo-64.png" srcSet="/logo-64.png 1x, /logo-192.png 2x" alt="snippy.llm" className="w-9 h-9 rounded-xl object-cover shrink-0 border border-slate-200 dark:border-slate-700 bg-white" />
             <div className="min-w-0 hidden sm:block">
-              <div className="font-semibold text-slate-900 leading-none truncate">snippy.llm</div>
-              <div className="text-xs text-slate-500 truncate">snippy.llm • личная</div>
+              <div className="font-semibold text-slate-900 dark:text-white leading-none truncate">snippy.llm</div>
+              <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">СНиП РК • ИИ-справочник</div>
             </div>
-            <div className="sm:hidden font-semibold text-slate-900 text-sm truncate">snippy.llm</div>
+            <div className="sm:hidden font-semibold text-slate-900 dark:text-white text-sm truncate">snippy.llm</div>
           </div>
           <nav className="flex items-center gap-1 shrink-0">
             {(['search', 'docs', 'profile'] as const).map(t => (
@@ -156,6 +104,7 @@ export default function App() {
             ))}
           </nav>
           <div className="flex items-center gap-2 shrink-0 min-w-0">
+            <CreditsBadge />
             {/* Dark mode toggle */}
             <button
               onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
@@ -176,20 +125,38 @@ export default function App() {
             >
               ?
             </button>
-            <PinnedDropdown />
             {user ? (
               <ProfileMenu user={user} onNavigate={(s) => goToProfile(s)} onLogout={logout} />
             ) : (
-              <button onClick={() => setShowAuth(!showAuth)} className="px-4 py-2 text-sm font-medium rounded-xl bg-blue-600 text-white hover:bg-blue-700 whitespace-nowrap shrink-0">Войти</button>
+              <button onClick={() => { setAuthMode('login'); setShowAuth(true) }} className="px-4 py-2 text-sm font-medium rounded-xl bg-blue-600 text-white hover:bg-blue-700 shadow-sm shadow-blue-600/20 whitespace-nowrap shrink-0">Войти</button>
             )}
           </div>
         </div>
       </header>
 
-      {/* Auth modal — только по клику Войти, не на всех вкладках */}
+      {/* Auth — настоящее модальное окно с заблюренным фоном */}
       {showAuth && !user && (
-        <div className="bg-slate-50 border-b border-slate-200">
-          <div className="max-w-6xl mx-auto px-4 py-6"><AuthGate /></div>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-[fadeIn_.15s_ease-out]"
+          onMouseDown={(e) => { if (e.target === e.currentTarget) setShowAuth(false) }}
+        >
+          <div className="w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl relative animate-[popIn_.18s_ease-out]">
+            <button
+              onClick={() => setShowAuth(false)}
+              title="Закрыть"
+              className="absolute top-3 right-3 w-8 h-8 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center transition"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+            <div className="p-6">
+              <div className="text-center mb-4">
+                <img src="/logo-64.png" alt="snippy.llm" className="w-14 h-14 mx-auto rounded-xl object-cover border border-slate-200 dark:border-slate-700 bg-white shadow-sm" />
+                <h3 className="font-semibold text-slate-900 dark:text-white mt-3 text-lg">Войдите чтобы продолжить</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">5 ИИ-ответов в день вместо 3 • бесплатно, без карты</p>
+              </div>
+              {authMode === 'login' ? <LoginForm onSwitch={() => setAuthMode('register')} onSuccess={() => setShowAuth(false)} /> : <RegisterForm onSwitch={() => setAuthMode('login')} onSuccess={() => setShowAuth(false)} />}
+            </div>
+          </div>
         </div>
       )}
 
@@ -204,18 +171,12 @@ export default function App() {
           filterType={search.filterType} setFilterType={search.setFilterType}
           filterStatus={search.filterStatus} setFilterStatus={search.setFilterStatus}
           showFilters={search.showFilters} setShowFilters={search.setShowFilters}
-          searchPinnedOnly={search.searchPinnedOnly} setSearchPinnedOnly={search.setSearchPinnedOnly}
           quotaExceeded={search.quotaExceeded} setQuotaExceeded={search.setQuotaExceeded}
           doSearch={search.doSearch}
           highlightPalette={highlightPalette} setHighlightPalette={setHighlightPalette}
           monoHex={monoHex} setMonoHex={setMonoHex}
           user={user} setShowAuth={setShowAuth} setAuthMode={setAuthMode}
           openPdf={openPdf}
-          handleBasketFiles={upload.handleBasketFiles}
-          activeBasketId={activeBasketId} baskets={baskets}
-          pinnedItems={pinnedItems} isPinned={isPinned}
-          assignments={assignments}
-          setBasketDragging={setBasketDragging} setDraggedDocId={setDraggedDocId}
           searchInputRef={searchInputRef}
         />
       )}
@@ -225,20 +186,8 @@ export default function App() {
           docs={docs.docs} docsLoading={docs.docsLoading}
           filterStatus={search.filterStatus} setFilterStatus={search.setFilterStatus}
           loadDocs={docs.loadDocs}
-          pinnedItems={pinnedItems} showPinnedOnly={showPinnedOnly} setShowPinnedOnly={setShowPinnedOnly}
           openPdf={openPdf}
-          handleBasketFiles={upload.handleBasketFiles}
-          selectedFile={upload.selectedFile} setSelectedFile={upload.setSelectedFile}
-          uploading={upload.uploading} uploadMsg={upload.uploadMsg}
-          handleUpload={upload.handleUpload} onDropFile={upload.onDropFile}
-          fileInputRef={upload.fileInputRef}
           user={user}
-          activeBasketId={activeBasketId} baskets={baskets}
-          assignments={assignments} localDocs={localDocs}
-          setBasketDragging={setBasketDragging} setDraggedDocId={setDraggedDocId}
-          collectorLogs={docs.collectorLogs} triggerCollector={triggerCollector}
-          authMode={authMode} setAuthMode={setAuthMode} setShowAuth={setShowAuth}
-          addLocalFiles={addLocalFiles}
         />
       )}
 
@@ -252,13 +201,12 @@ export default function App() {
         />
       )}
 
-      <FlyAnimation />
-      {/* --- NEW FEATURE MODALS --- */}
+      {/* --- MODALS --- */}
       <ShortcutsModal open={showShortcuts} onClose={() => setShowShortcuts(false)} />
       <QuickSearch open={showQuickSearch} onClose={() => setShowQuickSearch(false)} onSearch={(q) => { setTab('search'); search.setQuery(q); doSearchTracked(q) }} />
-      <footer className="mt-8 border-t border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900">
+      <footer className="mt-auto border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
         <div className="max-w-6xl mx-auto px-4 py-4 flex flex-col md:flex-row items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
-          <span>snippy.llm • Только онлайн • JWT • Rate limit 30/мин • No source → No claim</span>
+          <span>snippy.llm • Поиск бесплатный • ИИ-ответы 10 кредитов • No source → No claim</span>
           <span>⌨️ <button onClick={() => setShowShortcuts(true)} className="underline hover:text-slate-700 dark:hover:text-slate-200">Горячие клавиши</button> • {resolvedTheme === 'dark' ? '🌙' : '☀️'} <button onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')} className="underline hover:text-slate-700 dark:hover:text-slate-200">Тема</button></span>
         </div>
       </footer>

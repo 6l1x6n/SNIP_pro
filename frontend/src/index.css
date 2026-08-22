@@ -61,3 +61,8 @@ body {
   transform: translate(0,0) scale(1);
   opacity: 1;
 }
+
+/* ── Модалки (вход, квота) ── */
+@keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
+@keyframes popIn { from { opacity: 0; transform: scale(.96) translateY(8px) } to { opacity: 1; transform: scale(1) translateY(0) } }
+@keyframes slideUp { from { opacity: 0; transform: translateY(12px) } to { opacity: 1; transform: translateY(0) } }
