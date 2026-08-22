@@ -67,7 +67,7 @@ export function SearchView(props: SearchViewProps) {
     filterType, setFilterType, filterStatus, setFilterStatus,
     showFilters, setShowFilters,
     doSearch, highlightPalette, setHighlightPalette, monoHex, setMonoHex,
-    setShowAuth, setAuthMode, openPdf, searchInputRef, quotaExceeded, setQuotaExceeded,
+    user, setShowAuth, setAuthMode, openPdf, searchInputRef, quotaExceeded, setQuotaExceeded,
   } = props
 
   const [examples, setExamples] = useState<string[]>(() =>
