@@ -234,6 +234,7 @@ def main():
     ap.add_argument("--no-input", action="store_true", help="не читать «СНиП РК» (только демо)")
     ap.add_argument("--with-demo", action="store_true", help="добавить встроенные демо-документы")
     ap.add_argument("--batch", type=int, default=64)
+    ap.add_argument("--provider", default="", help="форсировать провайдера: gemini|jina|voyage|cohere|mistral")
     args = ap.parse_args()
 
     from app.pipeline.extractor import PDFExtractor
@@ -309,22 +310,50 @@ def main():
     if not chunks:
         print("Нет чанков — положи файлы (pdf/docx/doc/txt) в «СНиП РК» или включи --with-demo"); sys.exit(1)
 
-    # ---- 2. Эмбеддинги ----
-    embedder = get_embedding_provider()
+    # ---- 2. Эмбеддинги: цепочка «мощные → хорошие → средние» ----
+    # Весь индекс строится ОДНИМ провайдером; если его квота исчерпана —
+    # берём следующего. Выбранный пишем в manifest.json, воркер /api/embed
+    # читает его и эмбеддит запросы той же моделью.
+    from app.embeddings.provider import get_fallback_chain
+
+    chain = get_fallback_chain()
+    if args.provider:
+        chain = [(n, e) for n, e in chain if n == args.provider]
+        if not chain:
+            sys.exit(f"Провайдер '{args.provider}' недоступен — нет ключа в backend/.env")
+    if not chain:
+        sys.exit("Нет ни одного ключа эмбеддингов (GEMINI/JINA/VOYAGE/COHERE/MISTRAL_API_KEY)\n"
+                 "Добавьте хотя бы один в backend/.env — все бесплатные, без карты")
+    print("Цепочка провайдеров:", " → ".join(n for n, _ in chain))
+
+    global _GOOD_SIZE
+    vectors = None
+    chosen = None
     dim = None
-    vectors = []  # float lists
-    t0 = time.time()
-    B = args.batch
-    for i in range(0, len(chunks), B):
-        batch_texts = [c["t"][:8000] for c in chunks[i : i + B]]
-        embs = _embed_sync(embedder, batch_texts)
-        if dim is None:
-            dim = len(embs[0])
-        vectors.extend(embs)
-        done = min(i + B, len(chunks))
-        print(f"embed {done}/{len(chunks)} ({time.time()-t0:.0f}s)")
-        if i + B < len(chunks):
-            time.sleep(2)
+    for pname, embedder in chain:
+        _GOOD_SIZE = None  # у каждого API свои лимиты — ищем заново
+        print(f"── эмбеддинги через {pname} ({getattr(embedder, 'model', '?')}, {embedder.dim}d)")
+        try:
+            vs: list = []
+            dim = None
+            t0 = time.time()
+            B = args.batch
+            for i in range(0, len(chunks), B):
+                batch_texts = [c["t"][:8000] for c in chunks[i : i + B]]
+                embs = _embed_sync(embedder, batch_texts)
+                if dim is None:
+                    dim = len(embs[0])
+                vs.extend(embs)
+                done = min(i + B, len(chunks))
+                print(f"embed {done}/{len(chunks)} ({time.time()-t0:.0f}s)")
+            vectors, chosen = vs, pname
+            break
+        except Exception as e:
+            print(f"⚠️ {pname} не подошёл: {e}")
+            print("   → переключаюсь на следующего провайдера цепочки")
+            continue
+    if vectors is None:
+        sys.exit("Все провайдеры цепочки исчерпали квоты — попробуйте позже или добавьте ещё ключей")
 
     # ---- 3. Квантование int8 (per-vector scale) ----
     scales = []
@@ -365,7 +394,8 @@ def main():
         "version": 1,
         "builtAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "dim": dim, "count": len(chunks), "quantization": "int8-per-vector",
-        "model": getattr(embedder, "model", "unknown"),
+        "provider": chosen,
+        "model": next(e.model for n, e in chain if n == chosen),
         "bm25": {"k1": 1.2, "b": 0.75},
         "rrfK": 60,
     }

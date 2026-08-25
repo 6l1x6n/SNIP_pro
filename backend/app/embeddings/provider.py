@@ -1,6 +1,10 @@
-from abc import ABC, abstractmethod
+from abc import ABC
+from abc import abstractmethod
 from typing import List
 import numpy as np
+
+class ProviderQuotaError(RuntimeError):
+    """Квота провайдера исчерпана — цепочка фолбэков переключается на следующего."""
 
 class EmbeddingProvider(ABC):
     @abstractmethod
@@ -137,6 +141,193 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
         r.raise_for_status()
         raise RuntimeError("gemini embed_query: retries exhausted")
 
+class JinaEmbeddingProvider(EmbeddingProvider):
+    """jina-embeddings-v3: топ MTEB, мультиязычный. Trial ~10 млн токенов (jina.ai)."""
+    URL = "https://api.jina.ai/v1/embeddings"
+
+    def __init__(self, api_key: str, model: str = "jina-embeddings-v3", dim: int = 1024):
+        import httpx
+        self.api_key = api_key
+        self.model = model
+        self._dim = dim
+        self._client = httpx.AsyncClient(timeout=60)
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    def _norm(self, vecs: List[List[float]]) -> List[List[float]]:
+        arr = np.array(vecs, dtype=np.float32)
+        arr = arr / np.maximum(np.linalg.norm(arr, axis=1, keepdims=True), 1e-12)
+        return arr.tolist()
+
+    async def _request(self, texts: List[str], task: str) -> List[List[float]]:
+        import asyncio
+        delay = 5
+        for attempt in range(4):
+            r = await self._client.post(
+                self.URL,
+                headers={"Authorization": f"Bearer {self.api_key}", "Accept-Encoding": "identity"},
+                json={"model": self.model, "task": task, "dimensions": self._dim,
+                      "late_chunking": False, "input": texts},
+            )
+            if r.status_code in (429, 402, 403):
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30)
+                continue
+            r.raise_for_status()
+            return [d["embedding"] for d in r.json()["data"]]
+        raise ProviderQuotaError(f"{self.model}: квота/доступ исчерпан (429/402/403)")
+
+    async def embed(self, texts: List[str]) -> List[List[float]]:
+        out: List[List[float]] = []
+        for i in range(0, len(texts), 32):
+            out.extend(await self._request([t[:8000] for t in texts[i:i + 32]], "retrieval.passage"))
+        return self._norm(out)
+
+    async def embed_query(self, query: str) -> List[float]:
+        return self._norm(await self._request([query], "retrieval.query"))[0]
+
+class VoyageEmbeddingProvider(EmbeddingProvider):
+    """voyage-multilingual-2 (1024d): сильный мультиязычный. Щедрый trial (dashboard.voyageai.com)."""
+    URL = "https://api.voyageai.com/api/v1/embeddings"
+
+    def __init__(self, api_key: str, model: str = "voyage-multilingual-2", dim: int = 1024):
+        import httpx
+        self.api_key = api_key
+        self.model = model
+        self._dim = dim
+        self._client = httpx.AsyncClient(timeout=60)
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    def _norm(self, vecs: List[List[float]]) -> List[List[float]]:
+        arr = np.array(vecs, dtype=np.float32)
+        arr = arr / np.maximum(np.linalg.norm(arr, axis=1, keepdims=True), 1e-12)
+        return arr.tolist()
+
+    async def _request(self, texts: List[str], input_type: str) -> List[List[float]]:
+        import asyncio
+        delay = 5
+        for attempt in range(4):
+            r = await self._client.post(
+                self.URL,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json={"input": texts, "model": self.model, "input_type": input_type},
+            )
+            if r.status_code in (429, 402, 403):
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30)
+                continue
+            r.raise_for_status()
+            return [d["embedding"] for d in r.json()["data"]]
+        raise ProviderQuotaError(f"{self.model}: квота/доступ исчерпан (429/402/403)")
+
+    async def embed(self, texts: List[str]) -> List[List[float]]:
+        out: List[List[float]] = []
+        for i in range(0, len(texts), 64):
+            out.extend(await self._request([t[:8000] for t in texts[i:i + 64]], "document"))
+        return self._norm(out)
+
+    async def embed_query(self, query: str) -> List[float]:
+        return self._norm(await self._request([query], "query"))[0]
+
+class CohereEmbeddingProvider(EmbeddingProvider):
+    """embed-multilingual-v3.0 (1024d): до 96 текстов за вызов — при trial-лимите
+    ~1000 вызовов/мес это десятки тысяч чанков (dashboard.cohere.com → Trial key)."""
+    URL = "https://api.cohere.com/v2/embed"
+
+    def __init__(self, api_key: str, model: str = "embed-multilingual-v3.0", dim: int = 1024):
+        import httpx
+        self.api_key = api_key
+        self.model = model
+        self._dim = dim
+        self._client = httpx.AsyncClient(timeout=60)
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    def _norm(self, vecs: List[List[float]]) -> List[List[float]]:
+        arr = np.array(vecs, dtype=np.float32)
+        arr = arr / np.maximum(np.linalg.norm(arr, axis=1, keepdims=True), 1e-12)
+        return arr.tolist()
+
+    async def _request(self, texts: List[str], input_type: str) -> List[List[float]]:
+        import asyncio
+        delay = 5
+        for attempt in range(4):
+            r = await self._client.post(
+                self.URL,
+                headers={"Authorization": f"Bearer {self.api_key}", "Accept": "application/json"},
+                json={"texts": texts, "model": self.model, "input_type": input_type,
+                      "embedding_types": ["float"]},
+            )
+            if r.status_code in (429, 402, 403):
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30)
+                continue
+            r.raise_for_status()
+            return r.json()["embeddings"]["float"]
+        raise ProviderQuotaError(f"{self.model}: квота/доступ исчерпан (429/402/403)")
+
+    async def embed(self, texts: List[str]) -> List[List[float]]:
+        out: List[List[float]] = []
+        for i in range(0, len(texts), 96):
+            out.extend(await self._request([t[:8000] for t in texts[i:i + 96]], "search_document"))
+        return self._norm(out)
+
+    async def embed_query(self, query: str) -> List[float]:
+        return self._norm(await self._request([query], "search_query"))[0]
+
+class MistralEmbeddingProvider(EmbeddingProvider):
+    """mistral-embed (1024d): бесплатный тариф La Plateforme (console.mistral.ai)."""
+    URL = "https://api.mistral.ai/v1/embeddings"
+
+    def __init__(self, api_key: str, model: str = "mistral-embed", dim: int = 1024):
+        import httpx
+        self.api_key = api_key
+        self.model = model
+        self._dim = dim
+        self._client = httpx.AsyncClient(timeout=60)
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    def _norm(self, vecs: List[List[float]]) -> List[List[float]]:
+        arr = np.array(vecs, dtype=np.float32)
+        arr = arr / np.maximum(np.linalg.norm(arr, axis=1, keepdims=True), 1e-12)
+        return arr.tolist()
+
+    async def _request(self, texts: List[str]) -> List[List[float]]:
+        import asyncio
+        delay = 5
+        for attempt in range(4):
+            r = await self._client.post(
+                self.URL,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json={"model": self.model, "input": texts},
+            )
+            if r.status_code in (429, 402, 403):
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30)
+                continue
+            r.raise_for_status()
+            return [d["embedding"] for d in r.json()["data"]]
+        raise ProviderQuotaError(f"{self.model}: квота/доступ исчерпан (429/402/403)")
+
+    async def embed(self, texts: List[str]) -> List[List[float]]:
+        out: List[List[float]] = []
+        for i in range(0, len(texts), 32):
+            out.extend(await self._request([t[:8000] for t in texts[i:i + 32]]))
+        return self._norm(out)
+
+    async def embed_query(self, query: str) -> List[float]:
+        return self._norm(await self._request([query]))[0]
+
 class FastEmbedProvider(EmbeddingProvider):
     """ONNX-рантайм fastembed: та же модель MiniLM-L12-v2 384d без torch (~200MB RAM вместо ~800MB)"""
     def __init__(self, model_name: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"):
@@ -207,6 +398,31 @@ class SentenceTransformerProvider(EmbeddingProvider):
     async def embed_query(self, query: str) -> List[float]:
         embs = await self.embed([query])
         return embs[0]
+
+def get_fallback_chain():
+    """Цепочка «мощные → хорошие → средние» для оффлайн-сборки индекса.
+    Возвращает только провайдеров с наличествующими ключами, в порядке приоритета.
+    Явный EMBEDDING_PROVIDER из настроек ставится первым. Весь индекс строится
+    ОДНИМ провайдером (миксовать векторы разных моделей нельзя!)."""
+    from app.config import settings
+    s = settings
+    chain: list = []
+    if getattr(s, "gemini_api_key", None):
+        chain.append(("gemini", GeminiEmbeddingProvider(
+            api_key=s.gemini_api_key, model=s.gemini_embedding_model, dim=768)))
+    if getattr(s, "jina_api_key", None):
+        chain.append(("jina", JinaEmbeddingProvider(api_key=s.jina_api_key)))
+    if getattr(s, "voyage_api_key", None):
+        chain.append(("voyage", VoyageEmbeddingProvider(api_key=s.voyage_api_key)))
+    if getattr(s, "cohere_api_key", None):
+        chain.append(("cohere", CohereEmbeddingProvider(api_key=s.cohere_api_key)))
+    if getattr(s, "mistral_api_key", None):
+        chain.append(("mistral", MistralEmbeddingProvider(api_key=s.mistral_api_key)))
+    explicit = (getattr(s, "embedding_provider", "") or "").lower()
+    if explicit:
+        chain.sort(key=lambda pc: 0 if pc[0] == explicit else 1)
+    return chain
+
 
 # Фабрика
 def get_embedding_provider(model_name: str = None, device: str = "cpu") -> EmbeddingProvider:

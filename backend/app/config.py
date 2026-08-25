@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     embedding_dim: int = 384
     gemini_api_key: str | None = None  # aistudio.google.com, free tier без карты (EMBEDDING_PROVIDER=gemini)
     gemini_embedding_model: str = "gemini-embedding-001"  # 768d (text-embedding-004 decommissioned 2026)
+    # Резервные провайдеры эмбеддингов (цепочка «мощные → хорошие → средние»):
+    jina_api_key: str | None = None     # jina.ai — trial ~10 млн токенов (jina-embeddings-v3, 1024d)
+    voyage_api_key: str | None = None   # dashboard.voyageai.com — щедрый trial (voyage-multilingual-2, 1024d)
+    cohere_api_key: str | None = None   # dashboard.cohere.com — trial ~1000 вызовов x 96 текстов (embed-multilingual-v3.0, 1024d)
+    mistral_api_key: str | None = None  # console.mistral.ai — free тариф La Plateforme (mistral-embed, 1024d)
     embedding_device: str = "cpu"
     # LLM
     ollama_host: str = "http://localhost:11434"

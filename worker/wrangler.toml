@@ -8,6 +8,14 @@ binding = "DB"
 database_name = "snip-db"
 database_id = "da22e294-4ec2-4c9c-82b6-b6201c78d147"
 
+# R2 для PDF нормативов. Активация:
+#   1) Cloudflare Dashboard → R2 → Enable (один раз, бесплатно до 10ГБ)
+#   2) npx wrangler r2 bucket create snip-norms
+#   3) раскомментируй блок ниже и задеплой воркер
+# [[r2_buckets]]
+# binding = "NORMS"
+# bucket_name = "snip-norms"
+
 [vars]
 GROQ_MODEL = "openai/gpt-oss-120b"
 EMBED_MODEL = "gemini-embedding-001"
@@ -15,6 +23,9 @@ INDEX_BASE_URL = "https://snippy-llm.pages.dev/index"
 ALLOWED_ORIGINS = "https://snippy-llm.pages.dev,https://*.pages.dev,http://localhost:5173"
 CREDITS_ANON = "30"
 CREDITS_USER = "50"
-ASK_COST = "10"
+FAST_COST = "5"
+DEEP_COST = "10"
 
 # Секреты (не в git): npx wrangler secret put JWT_SECRET / GROQ_API_KEY / GEMINI_API_KEY
+# Резервные эмбеддинг-провайдеры (нужен только тот, кем собран индекс —
+# см. provider в manifest.json): JINA_API_KEY / VOYAGE_API_KEY / COHERE_API_KEY / MISTRAL_API_KEY
