@@ -7,19 +7,24 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PY="${PYTHON:-/opt/homebrew/bin/python3}"
-SKIP_R2=0; SKIP_PAGES=0
+SKIP_R2=0; SKIP_PAGES=0; SKIP_BUILD=0
 for arg in "$@"; do
   case "$arg" in
     --skip-r2) SKIP_R2=1 ;;
     --skip-pages) SKIP_PAGES=1 ;;
+    --skip-build) SKIP_BUILD=1 ;;
   *) echo "Неизвестный флаг: $arg"; exit 1 ;;
 esac
 done
 
 cd "$ROOT"
 
-echo "── 1/4 Сборка поискового индекса из «СНиП РК»"
-"$PY" scripts/build_index.py
+if [ "$SKIP_BUILD" -eq 0 ]; then
+  echo "── 1/4 Сборка поискового индекса из «СНиП РК»"
+  "$PY" scripts/build_index.py
+else
+  echo "── 1/4 Сборка пропущена (--skip-build — использую готовый индекс)"
+fi
 
 echo "── 2/4 Копирование PDF в статику (frontend/public/norms)"
 mkdir -p frontend/public/norms

@@ -150,7 +150,7 @@ async function embedQuery(env: Env, query: string): Promise<number[]> {
       return normalizeVec(d.data[0].embedding);
     }
     case "voyage": {
-      const r = await fetch("https://api.voyageai.com/api/v1/embeddings", {
+      const r = await fetch("https://api.voyageai.com/v1/embeddings", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.VOYAGE_API_KEY}` },
         body: JSON.stringify({ model, input_type: "query", input: [query] }),

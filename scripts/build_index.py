@@ -430,24 +430,36 @@ def _embed_sync(embedder, texts, _depth=0):
             return res
         except Exception as e:
             msg = str(e)
-            rate_limited = "429" in msg or "too many requests" in msg.lower() or "retries exhausted" in msg
-            if not rate_limited:
+            low = msg.lower()
+            rate_limited = "429" in msg or "too many requests" in low or "retries exhausted" in msg
+            # разовые сетевые глоки (TLS, таймауты, разрывы) — не повод хоронить провайдера
+            transient = (not rate_limited) and (
+                any(t in low for t in ("ssl", "bad record mac", "timeout", "timed out",
+                                       "connection", "reset by peer", "broken pipe",
+                                       "eof occurred", "network"))
+                or isinstance(e, (TimeoutError, ConnectionError))
+            )
+            if not rate_limited and not transient:
                 raise
-            # лимит не пускает даже после пауз — делим на 4, чтобы запрос стал меньше
-            if attempt >= 2 and len(texts) > 1 and _depth < 10:
+            # квота держится даже после пауз — дробим батч на четверти;
+            # сетевые сбои просто перетраиваем тем же размером
+            if rate_limited and attempt >= 2 and len(texts) > 1 and _depth < 10:
                 part = max(1, len(texts) // 4)
                 print(f"    ↯ 429 держится — дроблю батч {len(texts)} на {part}+{len(texts) - part}")
                 return (_embed_sync(embedder, texts[:part], _depth + 1)
                         + _embed_sync(embedder, texts[part:], _depth + 1))
-            print(f"    ⚠️ 429 rate limit, пауза {delay:.0f}s (попытка {attempt + 1}/6)")
-            time.sleep(delay)
-            delay = min(delay * 2, 300)
+            pause = min(delay, 300) if rate_limited else min(20 * (attempt + 1), 90)
+            kind = "429 rate limit" if rate_limited else "сетевой сбой"
+            print(f"    ⚠️ {kind}, пауза {pause:.0f}s (попытка {attempt + 1}/6): {msg[:80]}")
+            time.sleep(pause)
+            if rate_limited:
+                delay = min(delay * 2, 300)
     # попытки исчерпаны — последняя надежда на дробление
     if len(texts) > 1 and _depth < 10:
         part = max(1, len(texts) // 4)
         return (_embed_sync(embedder, texts[:part], _depth + 1)
                 + _embed_sync(embedder, texts[part:], _depth + 1))
-    raise RuntimeError("gemini: 429 даже на одиночный текст — кванта исчерпана, попробуйте позже")
+    raise RuntimeError("эмбеддинг недоступен: повторные сетевые сбои или исчерпанная квота")
 
 
 if __name__ == "__main__":

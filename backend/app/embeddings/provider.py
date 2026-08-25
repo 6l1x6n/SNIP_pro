@@ -190,7 +190,7 @@ class JinaEmbeddingProvider(EmbeddingProvider):
 
 class VoyageEmbeddingProvider(EmbeddingProvider):
     """voyage-multilingual-2 (1024d): сильный мультиязычный. Щедрый trial (dashboard.voyageai.com)."""
-    URL = "https://api.voyageai.com/api/v1/embeddings"
+    URL = "https://api.voyageai.com/v1/embeddings"
 
     def __init__(self, api_key: str, model: str = "voyage-multilingual-2", dim: int = 1024):
         import httpx
