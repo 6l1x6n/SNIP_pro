@@ -1,5 +1,8 @@
 name: keepalive-render
-# Пингуем бэкенд каждые 10 мин, чтобы Render Free не заснул (сон = холодный старт ~50с)
+# Пингуем бэкенд каждые 10 мин, чтобы Render Free не заснул (сон = холодный старт ~50с).
+# ВАЖНО: GitHub может задерживать cron-запуски на десятки минут — за это время сервис
+# засыпает, и первый пинг уходит на холодный старт и не укладывается в таймаут.
+# Поэтому: таймаут 120с + до 5 попыток (первая будит сервис, остальные получают 200).
 on:
   schedule:
     - cron: "*/10 * * * *"
@@ -11,6 +14,13 @@ jobs:
     steps:
       - name: Ping /api/health
         run: |
-          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 https://snip-backend-m21d.onrender.com/api/health)
-          echo "health: $code"
-          test "$code" = "200"
+          url="https://snip-backend-m21d.onrender.com/api/health"
+          attempts=5
+          for i in $(seq 1 $attempts); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 120 "$url" || true)
+            echo "попытка $i/$attempts: HTTP ${code:-000}"
+            [ "$code" = "200" ] && exit 0
+            [ "$i" -lt "$attempts" ] && sleep 30
+          done
+          echo "::error::Бэкенд не вернул 200 после $attempts попыток (последний код: ${code:-нет ответа})"
+          exit 1

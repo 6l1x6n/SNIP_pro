@@ -1,12 +1,14 @@
 """
 build_index.py — оффлайн-сборка статического поискового индекса SNIP.
 
-Вход:  norms/*.pdf (пакет нормативки; опционально norms/meta.json с номерами/названиями)
+Вход:  «СНиП РК»/**/*.{pdf,docx,doc,txt} — рекурсивно, все подпапки
+       (опционально meta.json в корне папки с номерами/названиями)
 Выход: frontend/public/index/{manifest.json, docs.json, chunks.json, vectors.bin, bm25.json, synonyms.json}
 
 Запуск:
-  /opt/homebrew/bin/python3 scripts/build_index.py                 # norms/ + демо-документы
-  /opt/homebrew/bin/python3 scripts/build_index.py --no-demo       # только norms/
+  /opt/homebrew/bin/python3 scripts/build_index.py                 # папка «СНиП РК»
+  /opt/homebrew/bin/python3 scripts/build_index.py --with-demo     # «СНиП РК» + демо-документы
+  /opt/homebrew/bin/python3 scripts/build_index.py --no-input      # только демо (для тестов)
   /opt/homebrew/bin/python3 scripts/build_index.py --input DIR --out DIR
 
 Токенизация ДОЛЖНА совпадать 1:1 с JS-портом в frontend/src/search/engine.ts:
@@ -117,19 +119,120 @@ DOC_NUMBER_RE = re.compile(r"(?:СН|СП|СТ|СНиП|ГОСТ)[\s._-]*РК?[\
 
 def parse_doc_meta(pdf_path: Path, meta_all: dict) -> dict:
     key = pdf_path.stem
+    clean_stem = pdf_path.stem.replace("_", " ").replace("+", " ")
     m = meta_all.get(key) or meta_all.get(pdf_path.name) or {}
     number = m.get("number")
     if not number:
-        found = DOC_NUMBER_RE.search(pdf_path.stem.replace("_", " "))
-        number = found.group(0).replace("_", " ").strip() if found else pdf_path.stem
-    return {"number": number, "title": m.get("title") or pdf_path.stem.replace("_", " "), "status": m.get("status", "active")}
+        found = DOC_NUMBER_RE.search(clean_stem)
+        number = found.group(0).replace("_", " ").replace("+", " ").strip() if found else clean_stem
+    return {"number": number, "title": m.get("title") or clean_stem, "status": m.get("status", "active")}
+
+
+# ---------- Извлечение текста из PDF/DOCX/DOC/TXT ----------
+
+SUPPORTED_EXTS = {".pdf", ".docx", ".doc", ".txt"}
+_DOCX_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+
+
+def extract_text(path: Path) -> str:
+    """Текст из .txt / .docx / .doc (для .pdf используется PDFExtractor)."""
+    ext = path.suffix.lower()
+    if ext == ".txt":
+        return _extract_txt(path)
+    if ext == ".docx":
+        return _extract_docx(path)
+    if ext == ".doc":
+        return _extract_doc(path)
+    raise ValueError(f"Неподдерживаемый формат: {ext}")
+
+
+def _extract_txt(path: Path) -> str:
+    raw = path.read_bytes()
+    for enc in ("utf-8", "cp1251"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="ignore")
+
+
+def _extract_docx(path: Path) -> str:
+    """DOCX = zip с word/document.xml; достаём абзацы без внешних зависимостей."""
+    import zipfile
+    import xml.etree.ElementTree as ET
+
+    with zipfile.ZipFile(path) as z:
+        root = ET.fromstring(z.read("word/document.xml"))
+    paras = []
+    for p in root.iter(f"{_DOCX_NS}p"):
+        line = "".join(t.text or "" for t in p.iter(f"{_DOCX_NS}t")).strip()
+        if line:
+            paras.append(line)
+    return "\n".join(paras)
+
+
+def _extract_doc(path: Path) -> str:
+    """Старый бинарный .doc: на macOS конвертируем штатным textutil, иначе эвристика по байтам."""
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["textutil", "-convert", "txt", "-stdout", str(path)],
+            capture_output=True, timeout=120,
+        )
+        if out.returncode == 0:
+            text = out.stdout.decode("utf-8", errors="ignore")
+            if len(text.strip()) > 200:
+                return text
+    except Exception:
+        pass
+    return _scrape_doc_binary(path)
+
+
+def _scrape_doc_binary(path: Path) -> str:
+    """Fallback без textutil: вытягиваем читаемые строки из OLE-бинарника (utf-16le/cp1251)."""
+    def readable(s: str) -> bool:
+        if len(s) < 12:
+            return False
+        good = sum(1 for ch in s if ch.isalnum() or ch.isspace() or ch in ".,;:!?()%№+-–—«»\"'/")
+        return good / len(s) > 0.85
+
+    data = path.read_bytes()
+    lines, seen = [], set()
+    for enc in ("utf-16-le", "cp1251"):
+        for line in data.decode(enc, errors="ignore").split("\n"):
+            line = line.strip()
+            key = line[:80]
+            if readable(line) and key not in seen:
+                seen.add(key)
+                lines.append(line)
+    return "\n".join(lines)
+
+
+def make_doc(title: str, text: str, source_format: str):
+    """Сплошной текст -> ExtractedDoc с псевдо-страницами (~3000 символов), как у PDF."""
+    from app.pipeline.extractor import PageText, ExtractedDoc
+
+    pages, buf, size = [], [], 0
+    for line in text.splitlines():
+        buf.append(line)
+        size += len(line) + 1
+        if size >= 3000:
+            pages.append(PageText(page_num=len(pages) + 1, text="\n".join(buf), has_text=True))
+            buf, size = [], 0
+    tail = "\n".join(buf)
+    if tail or not pages:
+        pages.append(PageText(page_num=len(pages) + 1, text=tail, has_text=len(tail.strip()) > 40))
+    return ExtractedDoc(title=title, pages=pages, total_pages=len(pages),
+                        is_scanned=False, metadata={"source_format": source_format})
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--input", default=str(ROOT / "norms"))
+    ap.add_argument("--input", default=str(ROOT / "СНиП РК"))
     ap.add_argument("--out", default=str(ROOT / "frontend" / "public" / "index"))
-    ap.add_argument("--no-demo", action="store_true", help="не добавлять встроенные демо-документы")
+    ap.add_argument("--no-input", action="store_true", help="не читать «СНиП РК» (только демо)")
+    ap.add_argument("--with-demo", action="store_true", help="добавить встроенные демо-документы")
     ap.add_argument("--batch", type=int, default=64)
     args = ap.parse_args()
 
@@ -152,28 +255,48 @@ def main():
     extractor = PDFExtractor()
     chunker = SNIPChunker()
 
-    pdfs = sorted(input_dir.glob("*.pdf")) if input_dir.exists() else []
-    print(f"PDF в {input_dir}: {len(pdfs)}")
+    files = []
+    if not args.no_input and input_dir.exists():
+        files = sorted(
+            (f for f in input_dir.rglob("*")
+             if f.is_file() and f.suffix.lower() in SUPPORTED_EXTS and not f.name.startswith(".")),
+            key=lambda f: str(f.relative_to(input_dir)).lower(),
+        )
+    if not args.no_input:
+        print(f"Файлов в {input_dir}: {len(files)} ({', '.join(sorted(SUPPORTED_EXTS))})")
 
-    for pdf_path in pdfs:
-        print(f"  extract: {pdf_path.name}")
-        doc_info = parse_doc_meta(pdf_path, meta_all)
-        extracted = extractor.extract(pdf_path)
-        if extracted.is_scanned:
-            print(f"    скан → OCR fallback")
-            extracted = extractor.extract_with_ocr(pdf_path, lang="rus+eng")
+    for file_path in files:
+        rel = file_path.relative_to(input_dir)
+        ext = file_path.suffix.lower()
+        print(f"  extract[{ext}]: {rel}")
+        doc_info = parse_doc_meta(file_path, meta_all)
+        if ext == ".pdf":
+            extracted = extractor.extract(file_path)
+            if extracted.is_scanned:
+                print(f"    скан → OCR fallback")
+                extracted = extractor.extract_with_ocr(file_path, lang="rus+eng")
+        else:
+            try:
+                text = extract_text(file_path)
+            except Exception as e:
+                print(f"    ⚠️ пропуск: {e}")
+                continue
+            if len(text.strip()) < 100:
+                print(f"    ⚠️ пустой документ — пропуск")
+                continue
+            extracted = make_doc(doc_info["title"], text, ext.lstrip("."))
         raw_chunks = chunker.chunk_extracted(extracted)
         d_idx = len(docs)
         docs.append({
             "id": str(d_idx), "number": doc_info["number"], "title": doc_info["title"],
             "status": doc_info["status"], "pages": extracted.total_pages,
-            "file": pdf_path.name,
+            "file": file_path.name,
         })
         for c in raw_chunks:
             chunks.append({"d": d_idx, "p": c.paragraph or "", "pg": c.page, "t": c.text, "ty": c.type})
         print(f"    -> {len(raw_chunks)} чанков ({doc_info['number']})")
 
-    if not args.no_demo:
+    if args.with_demo:
         for dd in DEMO_DOCS:
             d_idx = len(docs)
             docs.append({"id": str(d_idx), "number": dd["number"], "title": dd["title"],
@@ -184,7 +307,7 @@ def main():
             print(f"демо: {dd['number']} -> {len(chunks) - n0} чанков")
 
     if not chunks:
-        print("Нет чанков — положи PDF в norms/ или убери --no-demo"); sys.exit(1)
+        print("Нет чанков — положи файлы (pdf/docx/doc/txt) в «СНиП РК» или включи --with-demo"); sys.exit(1)
 
     # ---- 2. Эмбеддинги ----
     embedder = get_embedding_provider()
@@ -251,9 +374,50 @@ def main():
     print(f"\nГотово: {out_dir} ({total_kb:.0f} KB суммарно)")
 
 
-def _embed_sync(embedder, texts):
+_EMBED_LOOP = None  # один цикл на все батчи: httpx.AsyncClient привязан к первому loop
+_GOOD_SIZE = None  # последний размер запроса, который прошёл без 429 — к нему и стремимся
+
+def _embed_sync(embedder, texts, _depth=0):
+    """Батч с защитой от 429 free-tier: пара пауз с backoff, затем АДАПТИВНОЕ дробление
+    (делим на 4 — так быстрее находим проходящий размер). Найденный размер запоминаем
+    в _GOOD_SIZE, чтобы следующие батчи сразу резать по нему."""
     import asyncio
-    return asyncio.run(embedder.embed(texts))
+    global _EMBED_LOOP, _GOOD_SIZE
+    if _EMBED_LOOP is None or _EMBED_LOOP.is_closed():
+        _EMBED_LOOP = asyncio.new_event_loop()
+    # уже знаем проходящий размер — режем сразу, без лишних 429
+    if _GOOD_SIZE and len(texts) > _GOOD_SIZE:
+        out = []
+        for i in range(0, len(texts), _GOOD_SIZE):
+            out.extend(_embed_sync(embedder, texts[i:i + _GOOD_SIZE], _depth))
+            time.sleep(1)
+        return out
+    delay = 65.0
+    for attempt in range(6):
+        try:
+            res = _EMBED_LOOP.run_until_complete(embedder.embed(texts))
+            _GOOD_SIZE = max(_GOOD_SIZE or 0, len(texts))
+            return res
+        except Exception as e:
+            msg = str(e)
+            rate_limited = "429" in msg or "too many requests" in msg.lower() or "retries exhausted" in msg
+            if not rate_limited:
+                raise
+            # лимит не пускает даже после пауз — делим на 4, чтобы запрос стал меньше
+            if attempt >= 2 and len(texts) > 1 and _depth < 10:
+                part = max(1, len(texts) // 4)
+                print(f"    ↯ 429 держится — дроблю батч {len(texts)} на {part}+{len(texts) - part}")
+                return (_embed_sync(embedder, texts[:part], _depth + 1)
+                        + _embed_sync(embedder, texts[part:], _depth + 1))
+            print(f"    ⚠️ 429 rate limit, пауза {delay:.0f}s (попытка {attempt + 1}/6)")
+            time.sleep(delay)
+            delay = min(delay * 2, 300)
+    # попытки исчерпаны — последняя надежда на дробление
+    if len(texts) > 1 and _depth < 10:
+        part = max(1, len(texts) // 4)
+        return (_embed_sync(embedder, texts[:part], _depth + 1)
+                + _embed_sync(embedder, texts[part:], _depth + 1))
+    raise RuntimeError("gemini: 429 даже на одиночный текст — кванта исчерпана, попробуйте позже")
 
 
 if __name__ == "__main__":
