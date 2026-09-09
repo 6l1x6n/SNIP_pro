@@ -6,6 +6,9 @@
  * Артефакты: /index/{manifest,docs,chunks,bm25,synonyms}.json + /index/vectors.bin
  * Формат vectors.bin: "SNV1" | u32 dim | u32 count | f32[count] scales | i8[count*dim]
  */
+import { tokenize } from "../utils/stem";
+export { tokenize };
+import { SEMANTIC_SYNONYMS } from "../utils/semanticSynonyms";
 
 export type SearchMode = "fast" | "deep";
 
@@ -40,6 +43,9 @@ export interface SearchResult {
   tookMs: number;
   weak: boolean;
   variants: string[];
+  /** true если вектор недоступен (429/502 провайдера) и поиск шёл только по BM25 */
+  degraded?: boolean;
+  degradedReason?: string;
 }
 
 interface Manifest {
@@ -50,6 +56,7 @@ interface Manifest {
   quantization: string;
   model: string;
   rrfK: number;
+  shards?: { vectors?: number; chunks?: number };
 }
 
 interface Bm25Index {
@@ -72,49 +79,8 @@ interface IndexBundle {
   int8: Int8Array;
 }
 
-// ---------- Токенизатор (зеркало build_index.py) ----------
-
-const STOPWORDS = new Set(
-  `и в во не что он на я с со как а то все она так его но да ты к у же вы за бы по
-только ее мне было вот от меня еще нет о из ему теперь когда даже ну вдруг ли если уже или ни быть
-был него до вас нибудь опять уж вам сказал ведь там потом себя ничего ей может они тут где есть надо
-ней для мы тебя их чем была сам чтоб без будто человек чего раз тоже себе под жизнь будет ж тогда кто
-этот говорил того потому этого какой совсем ним здесь этом один почти мой тем чтобы нее кажется сейчас
-были куда зачем сказать всех никогда сегодня можно при наконец два об другой хоть после над больше тот
-через эти нас про всего них какая много разве три эту моя впрочем хорошо свою этой перед иногда лучше
-чуть том нельзя такой им более всегда конечно всю между это который которые которых также очень своих
-таких является`
-    .split(/\s+/)
-    .filter(Boolean)
-);
-
-const SUFFIXES = [
-  "ования", "ование", "ениями", "ение", "ениям", "ениях", "ироваться",
-  "ирован", "ировать", "ами", "ями", "ого", "его", "ому", "ему", "ыми", "ими",
-  "ая", "ое", "ые", "ий", "ый", "ой", "ей", "ом", "ем", "ах", "ях", "ую", "юю",
-  "ее", "ии", "ия", "ие", "ов", "ев", "ь", "а", "я", "о", "е", "у", "ю", "ы",
-  "и", "й",
-].sort((a, b) => b.length - a.length);
-
-const TOKEN_RE = /[а-яa-z0-9]+/g;
-
-export function tokenize(text: string): string[] {
-  const out: string[] = [];
-  for (const raw of text.toLowerCase().replace(/ё/g, "е").match(TOKEN_RE) ?? []) {
-    if (STOPWORDS.has(raw) || raw.length < 2) continue;
-    let w = raw;
-    if (!/^\d+$/.test(w)) {
-      for (const suf of SUFFIXES) {
-        if (w.endsWith(suf) && w.length - suf.length >= 3) {
-          w = w.slice(0, -suf.length);
-          break;
-        }
-      }
-    }
-    if (w.length >= 2 && !STOPWORDS.has(w)) out.push(w);
-  }
-  return out;
-}
+// ---------- Токенизатор (зеркало build_index.py; реализация в utils/stem.ts) ----------
+// (импорт tokenize — в шапке файла)
 
 function normalizeQuery(q: string): string {
   return q
@@ -129,17 +95,46 @@ function normalizeQuery(q: string): string {
 function expandVariants(query: string, synonyms: Record<string, string[]>, maxVariants: number): string[] {
   const nq = normalizeQuery(query);
   const variants = [nq];
-  for (const [key, syns] of Object.entries(synonyms)) {
-    if (nq.includes(key)) {
-      for (const s of syns.slice(0, 2)) {
-        const v = nq.replace(key, s);
-        if (!variants.includes(v)) variants.push(v);
-        if (variants.length >= maxVariants) break;
-      }
+  // Словами, а не \b-regex: в JS \b не видит границы кириллических слов
+  // (\w — только ASCII), поэтому «перилами» через \b не матчилось бы.
+  const words = nq.split(" ").filter(Boolean);
+  for (const [rawKey, syns] of Object.entries(synonyms)) {
+    // Ключи приводим к той же нормализации, что и запрос (lower + ё→е):
+    // иначе ключ «проём» никогда не совпадёт с «проем» в запросе.
+    const key = rawKey.toLowerCase().replace(/ё/g, "е");
+    if (!words.some((w) => w.includes(key))) continue;
+    for (const s of syns.slice(0, 2)) {
+      // Заменяется ЦЕЛОЕ слово («перилами» → «ограждение»), стемминг — позже в tokenize()
+      const v = words.map((w) => (w.includes(key) ? s : w)).join(" ");
+      if (!variants.includes(v)) variants.push(v);
+      if (variants.length >= maxVariants) break;
     }
     if (variants.length >= maxVariants) break;
   }
   return variants;
+}
+
+// ---------- Смысловой режим (тумблер в Настройках; квоты не затрагивает) ----------
+
+const SEMANTIC_KEY = "snip_semantic";
+
+let semanticMode = true;
+try {
+  // По умолчанию ВКЛ (квоту не затрагивает — чисто клиентское ранжирование);
+  // явный "0" в localStorage — выкл (тумблер в Настройках).
+  semanticMode = localStorage.getItem(SEMANTIC_KEY) !== "0";
+} catch { /* SSR/приватный режим — вкл */ }
+
+/** Вкл/выкл смыслового ранжирования (оверлей синонимов + векторный приоритет). */
+export function setSemanticMode(v: boolean): void {
+  semanticMode = v;
+  try {
+    localStorage.setItem(SEMANTIC_KEY, v ? "1" : "0");
+  } catch {}
+}
+
+export function isSemanticMode(): boolean {
+  return semanticMode;
 }
 
 // ---------- Загрузка индекса ----------
@@ -150,26 +145,49 @@ export function loadIndex(base = "/index"): Promise<IndexBundle> {
   if (bundlePromise) return bundlePromise;
   bundlePromise = (async () => {
     const j = async <T>(p: string): Promise<T> => (await fetch(`${base}/${p}`)).json();
-    const [manifest, docs, chunks, bm25, synonyms] = await Promise.all([
-      j<Manifest>("manifest.json"),
+    const manifest = await j<Manifest>("manifest.json");
+    const [docs, bm25, synonyms] = await Promise.all([
       j<DocInfo[]>("docs.json"),
-      j<ChunkMeta[]>("chunks.json"),
       j<Bm25Index>("bm25.json"),
       j<Record<string, string[]>>("synonyms.json"),
     ]);
-    const res = await fetch(`${base}/vectors.bin`);
-    const buf = await res.arrayBuffer();
-    const view = new DataView(buf);
-    const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
-    if (magic !== "SNV1") throw new Error("vectors.bin: неверный формат");
-    const dim = view.getUint32(4, true);
-    const count = view.getUint32(8, true);
-    const scalesOff = 12;
-    const scales = new Float32Array(buf.slice(scalesOff, scalesOff + 4 * count));
-    const dataOff = scalesOff + 4 * count;
-    const int8 = new Int8Array(buf, dataOff, count * dim);
-    if (count !== chunks.length) throw new Error("vectors.bin не совпадает с chunks.json");
-    return { manifest, docs, chunks, bm25, synonyms, dim, count, scales, int8 };
+    // Шарды (manifest.shards) или классические одиночные файлы
+    const nChunkShards = manifest.shards?.chunks ?? 1;
+    const nVecShards = manifest.shards?.vectors ?? 1;
+    const chunkParts: Promise<ChunkMeta[]>[] = [];
+    for (let k = 0; k < nChunkShards; k++) chunkParts.push(j<ChunkMeta[]>(`chunks_${k}.json`));
+    const chunks: ChunkMeta[] = ([] as ChunkMeta[]).concat(...(await Promise.all(chunkParts)));
+
+    // Векторы: читаем все шарды и склеиваем scales + int8 в единые буферы
+    const shardBufs = await Promise.all(
+      Array.from({ length: nVecShards }, (_, k) =>
+        fetch(k === 0 && nVecShards === 1 ? `${base}/vectors.bin` : `${base}/vectors_${k}.bin`).then((r) => r.arrayBuffer())
+      )
+    );
+    let dim = 0;
+    let totalCount = 0;
+    const slices: Array<{ scales: ArrayBuffer; data: ArrayBuffer }> = [];
+    for (const b of shardBufs) {
+      const v = new DataView(b);
+      const magic = String.fromCharCode(v.getUint8(0), v.getUint8(1), v.getUint8(2), v.getUint8(3));
+      if (magic !== "SNV1") throw new Error("vectors.bin: неверный формат");
+      dim = v.getUint32(4, true);
+      const n = v.getUint32(8, true);
+      totalCount += n;
+      slices.push({ scales: b.slice(12, 12 + 4 * n), data: b.slice(12 + 4 * n, 12 + 4 * n + n * dim) });
+    }
+    const scales = new Float32Array(totalCount);
+    const int8 = new Int8Array(totalCount * dim);
+    let sOff = 0;
+    let dOff = 0;
+    for (const s of slices) {
+      scales.set(new Float32Array(s.scales), sOff);
+      int8.set(new Int8Array(s.data), dOff);
+      sOff += s.scales.byteLength / 4;
+      dOff += s.data.byteLength;
+    }
+    if (totalCount !== chunks.length) throw new Error("vectors.bin не совпадает с chunks.json");
+    return { manifest, docs, chunks, bm25, synonyms, dim, count: totalCount, scales, int8 };
   })();
   return bundlePromise;
 }
@@ -228,22 +246,37 @@ export async function search(query: string, opts?: { mode?: SearchMode; topK?: n
   const b = await loadIndex();
   if (!query.trim()) return { hits: [], tookMs: 0, weak: true, variants: [] };
 
-  const variants = expandVariants(query, b.synonyms, mode === "deep" ? 3 : 1);
-  const qVec = await embed(query);
+  const sem = semanticMode;
+  // Оверлей первым: при исчерпании лимита вариантов приоритет у смысловых синонимов.
+  const synonyms = sem ? { ...SEMANTIC_SYNONYMS, ...b.synonyms } : b.synonyms;
+  const maxVariants = mode === "deep" ? (sem ? 5 : 3) : sem ? 3 : 1;
+  const variants = expandVariants(query, synonyms, maxVariants);
+  // Safety: вектор может лечь (Cohere 429 → worker 429 → searchClient ретраи исчерпаны).
+  // Вместо жёсткой ошибки деградируем до BM25-only как backend/app/search/hybrid.py (q_emb=None).
+  let qVec: number[] | null = null;
+  let embedError: any = null;
+  try {
+    qVec = await embed(query);
+  } catch (e: any) {
+    embedError = e;
+    console.warn("embed недоступен — поиск только по BM25", e?.status ?? "", e?.provider ?? "", e?.message ?? e);
+  }
 
   const K = b.manifest.rrfK ?? 60;
   const rrf = new Map<number, number>();
   const bestVec = new Map<number, number>();
   const bestBm = new Map<number, number>();
 
-  // vector ranking — один раз: эмбеддинг считается от исходного запроса
-  const vecRanked = ranksFrom(
-    new Map<number, number>(Array.from({ length: b.count }, (_, i) => [i, dotQueryInt8(qVec, b, i)]))
-  );
-  vecRanked.forEach(([idx], rank) => {
-    rrf.set(idx, (rrf.get(idx) ?? 0) + 1 / (K + rank + 1));
-    bestVec.set(idx, Math.max(bestVec.get(idx) ?? -Infinity, vecRanked[rank][1]));
-  });
+  // vector ranking — один раз: эмбеддинг считается от исходного запроса (скип при деградации)
+  if (qVec) {
+    const vecRanked = ranksFrom(
+      new Map<number, number>(Array.from({ length: b.count }, (_, i) => [i, dotQueryInt8(qVec as number[], b, i)]))
+    );
+    vecRanked.forEach(([idx], rank) => {
+      rrf.set(idx, (rrf.get(idx) ?? 0) + 1 / (K + rank + 1));
+      bestVec.set(idx, Math.max(bestVec.get(idx) ?? -Infinity, vecRanked[rank][1]));
+    });
+  }
 
   for (const variant of variants) {
     // bm25 ranking по вариантам запроса
@@ -256,11 +289,15 @@ export async function search(query: string, opts?: { mode?: SearchMode; topK?: n
     }
   }
 
-  // финальный скор: 0.6*norm_rrf + 0.4*vector_score → percent 10..98 (как в hybrid.py)
+  // финальный скор: обычно 0.6*norm_rrf + 0.4*vector_score (как в hybrid.py);
+  // в смысловом режиме векторный приоритет 0.45/0.55 → percent 10..98.
+  // При BM25-only деградации (нет qVec) скор = только norm_rrf.
   const ranked = ranksFrom(rrf);
   const maxRrf = ranked[0]?.[1] ?? 1;
+  const wRrf = sem ? 0.45 : 0.6;
+  const wVec = sem ? 0.55 : 0.4;
   const hits: Hit[] = ranked.slice(0, topK).map(([idx, rrfScore]) => {
-    const combined = 0.6 * (rrfScore / maxRrf) + 0.4 * (bestVec.get(idx) ?? 0);
+    const combined = qVec ? wRrf * (rrfScore / maxRrf) + wVec * (bestVec.get(idx) ?? 0) : rrfScore / maxRrf;
     const percent = Math.max(10, Math.min(98, Math.round(10 + 88 * combined)));
     return {
       chunk: b.chunks[idx],
@@ -276,7 +313,18 @@ export async function search(query: string, opts?: { mode?: SearchMode; topK?: n
   const VEC_MIN = corpusSmall ? 0.25 : 0.32;
   const topVec = Math.max(...hits.map((h) => h.vecScore), 0);
   const topBm = Math.max(...hits.map((h) => h.bm25Score), 0);
-  const weak = hits.length === 0 || (topVec < VEC_MIN && topBm < 0.005);
+  // При деградации векторный порог не применяем — только BM25.
+  const weak = qVec
+    ? hits.length === 0 || (topVec < VEC_MIN && topBm < 0.005)
+    : hits.length === 0 || topBm < 0.005;
+
+  if (!qVec) {
+    const reason =
+      embedError?.rateLimited || embedError?.status === 429
+        ? "Лимит эмбеддингов (429) — показан текстовый поиск без векторного ранжирования"
+        : "Векторный поиск временно недоступен — показан текстовый поиск";
+    return { hits, tookMs: Math.round(performance.now() - t0), weak, variants, degraded: true, degradedReason: reason };
+  }
 
   return { hits, tookMs: Math.round(performance.now() - t0), weak, variants };
 }
