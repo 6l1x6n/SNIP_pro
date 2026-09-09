@@ -27,6 +27,7 @@ export const PROVIDER_LABEL: Record<string, string> = {
   custom: 'Резервный',
   cache: 'кэш',
   'workers-ai': 'Workers AI',
+  zen: 'Zen · MiMo',
   pollinations: 'Pollinations',
 }
 

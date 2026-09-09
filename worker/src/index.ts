@@ -28,9 +28,9 @@ export interface Env {
   COHERE_API_KEY?: string;
   MISTRAL_API_KEY?: string;
   // Резервные LLM-звенья цепочки /ask (порядок: Groq → Groq-alt → Gemini →
-  // Cerebras → OpenRouter → DeepSeek → Mistral → Cohere → Custom → Workers AI → Pollinations).
+  // Cerebras → OpenRouter → DeepSeek → Mistral → Cohere → Custom → Workers AI → Zen → Pollinations).
   // Секреты: npx wrangler secret put CEREBRAS_API_KEY / OPENROUTER_API_KEY / DEEPSEEK_API_KEY /
-  //   COHERE_API_KEY / MISTRAL_API_KEY / LLM_CUSTOM_KEY
+  //   COHERE_API_KEY / MISTRAL_API_KEY / LLM_CUSTOM_KEY / OPENCODE_API_KEY
   CEREBRAS_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
   OPENROUTER_MODEL?: string; // дефолт meta-llama/llama-3.1-8b-instruct:free
@@ -38,6 +38,10 @@ export interface Env {
   LLM_CUSTOM_BASE?: string; // напр. https://your-gateway.example.com/v1 (без /chat/completions)
   LLM_CUSTOM_KEY?: string;
   LLM_CUSTOM_MODEL?: string;
+  // OpenCode Zen (free-tier чат-модели, OpenAI-совместимый /v1/chat/completions).
+  // Ключ: https://opencode.ai/auth (нужен биллинг-аккаунт даже для free).
+  OPENCODE_API_KEY?: string;
+  ZEN_MODEL?: string; // дефолт mimo-v2.5-free
 }
 
 // ---------- Каталог биллинга (цены в тенге, демо-активация без денег) ----------
@@ -642,11 +646,11 @@ async function askCacheKey(query: string, mode: string): Promise<string> {
 const ASK_CACHE_TTL_GROUNDED = 48 * 3600 * 1000;
 const ASK_CACHE_TTL_UNGROUNDED = 12 * 3600 * 1000;
 
-// ---------- LLM-цепочка фолбэков: Groq → Groq-alt → Gemini → Cerebras → OpenRouter → DeepSeek → Mistral → Cohere → Custom → Workers AI → Pollinations → extractive ----------
+// ---------- LLM-цепочка фолбэков: Groq → Groq-alt → Gemini → Cerebras → OpenRouter → DeepSeek → Mistral → Cohere → Custom → Workers AI → Zen → Pollinations → extractive ----------
 
 export type LlmProvider =
   | "groq" | "groq-alt" | "gemini" | "cerebras" | "openrouter" | "deepseek"
-  | "mistral-chat" | "cohere-chat" | "custom" | "workers-ai" | "pollinations" | "extractive";
+  | "mistral-chat" | "cohere-chat" | "custom" | "workers-ai" | "zen" | "pollinations" | "extractive";
 
 /** Альтернативные бесплатные бакеты Groq (отдельные лимиты моделей; дубликат primary скипается).
  *  ВАЖНО: Llama-модели (8b-instant, 70b-versatile, scout) этому аккаунту НЕДОСТУПНЫ
@@ -659,7 +663,7 @@ const LLM_LINK_DEFS = [
   "llm_groq_alt", "llm_gemini",
   "llm_cerebras", "llm_openrouter", "llm_deepseek",
   "llm_mistral_chat", "llm_cohere_chat", "llm_custom",
-  "llm_workers", "llm_pollinations", "llm_extractive",
+  "llm_workers", "llm_zen", "llm_pollinations", "llm_extractive",
 ];
 
 async function llmEnabled(env: Env, key: string): Promise<boolean> {
@@ -832,8 +836,23 @@ async function workersAiText(env: Env, prompt: string, maxTokens: number): Promi
   return text;
 }
 
+/** OpenCode Zen: free-tier чат-модели через OpenAI-совместимый /v1/chat/completions.
+ *  Дефолт mimo-v2.5-free (free-промо, может исчезнуть — звено тогда скипается как 404).
+ *  Free-модели могут использовать промпты для улучшения — чувствительные данные не слать. */
+async function zenText(env: Env, prompt: string, maxTokens: number): Promise<string> {
+  if (!env.OPENCODE_API_KEY) throw new Error("zen: нет ключа");
+  return openAiChatText(
+    "zen",
+    "https://opencode.ai/zen/v1",
+    env.OPENCODE_API_KEY,
+    env.ZEN_MODEL ?? "mimo-v2.5-free",
+    prompt,
+    maxTokens
+  );
+}
+
 async function pollinationsText(prompt: string, maxTokens: number): Promise<string> {
-  // keyless резерв: GET text.pollinations.ai/{prompt}; негарантирован, поэтому предпоследний
+  // keyless резерв: GET text.pollinations.ai/{prompt}; негарантирован, поэтому последний перед экстрактивом
   const u = "https://text.pollinations.ai/" + encodeURIComponent(prompt.slice(0, 3500)) + "?model=openai&private=true";
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 25000);
@@ -851,6 +870,18 @@ async function pollinationsText(prompt: string, maxTokens: number): Promise<stri
 interface LlmLink {
   id: Exclude<LlmProvider, "groq" | "extractive">;
   run: (prompt: string, maxTokens: number) => Promise<string>;
+}
+
+/** Zen ВКЛЮЧАЕТСЯ только явным opt-in (llm_zen=1 в settings): free-tier Zen закрыт
+ *  для серверного использования (MissingSessionID — только внутри OpenCode-клиента),
+ *  поэтому дефолт "0", а не "1" как у остальных звеньев. */
+async function zenOptIn(env: Env): Promise<boolean> {
+  try {
+    const { values } = await getSettings(env);
+    return (values["llm_zen"] ?? "0") === "1";
+  } catch {
+    return false;
+  }
 }
 
 /** Звенья после primary Groq (с учётом kill-switches и наличия ключей/binding). */
@@ -885,6 +916,9 @@ export async function fallbackLinks(env: Env): Promise<LlmLink[]> {
   }
   if ((await llmEnabled(env, "llm_workers")) && env.AI) {
     links.push({ id: "workers-ai", run: (p, t) => workersAiText(env, p, t) });
+  }
+  if ((await zenOptIn(env)) && env.OPENCODE_API_KEY) {
+    links.push({ id: "zen", run: (p, t) => zenText(env, p, t) });
   }
   if (await llmEnabled(env, "llm_pollinations")) {
     links.push({ id: "pollinations", run: (p, t) => pollinationsText(p, t) });
@@ -1232,6 +1266,7 @@ async function getModelUsage(
         SUM(CASE WHEN meta LIKE '%"llm":"cohere-chat"%' THEN 1 ELSE 0 END) AS cohere_chat,
         SUM(CASE WHEN meta LIKE '%"llm":"custom"%' THEN 1 ELSE 0 END) AS custom,
         SUM(CASE WHEN meta LIKE '%"llm":"workers-ai"%' THEN 1 ELSE 0 END) AS workers,
+        SUM(CASE WHEN meta LIKE '%"llm":"zen"%' THEN 1 ELSE 0 END) AS zen,
         SUM(CASE WHEN meta LIKE '%"llm":"pollinations"%' THEN 1 ELSE 0 END) AS pollinations,
         SUM(CASE WHEN meta LIKE '%"llm":"groq-alt"%' THEN 1 ELSE 0 END) AS groq_alt,
         SUM(CASE WHEN meta LIKE '%"llm":"cache"%' THEN 1 ELSE 0 END) AS cache,
@@ -1239,7 +1274,7 @@ async function getModelUsage(
        FROM ledger WHERE kind='spend_deep' AND created_at >= ?`
     )
       .bind(sinceIso)
-      .first<{ gemini: number; cerebras: number; openrouter: number; deepseek: number; mistral_chat: number; cohere_chat: number; custom: number; workers: number; pollinations: number; groq_alt: number; cache: number; extractive: number }>(),
+      .first<{ gemini: number; cerebras: number; openrouter: number; deepseek: number; mistral_chat: number; cohere_chat: number; custom: number; workers: number; zen: number; pollinations: number; groq_alt: number; cache: number; extractive: number }>(),
   ]);
   const byKind = (kind: string): SegmentRow[] =>
     (spendRows.results ?? [])
@@ -1269,6 +1304,7 @@ async function getModelUsage(
         cohere_chat: fbRows?.cohere_chat ?? 0,
         custom: fbRows?.custom ?? 0,
         workers: fbRows?.workers ?? 0,
+        zen: fbRows?.zen ?? 0,
         pollinations: fbRows?.pollinations ?? 0,
         cache: fbRows?.cache ?? 0,
         extractive: fbRows?.extractive ?? 0,
@@ -2044,6 +2080,7 @@ export default {
                   { id: "cohere-chat", key_set: !!env.COHERE_API_KEY },
                   { id: "custom", key_set: !!(env.LLM_CUSTOM_BASE && env.LLM_CUSTOM_KEY) },
                   { id: "workers-ai", key_set: !!env.AI },
+                  { id: "zen", key_set: !!env.OPENCODE_API_KEY },
                   { id: "pollinations", key_set: true },
                 ],
                 embed_fallbacks: (["gemini", "jina", "voyage", "cohere", "mistral"] as const).map((id) => ({
@@ -2155,7 +2192,8 @@ export default {
           const lim = await getLimits(env);
           const settings = await getSettings(env);
           const llmVals: Record<string, string> = {};
-          for (const k of LLM_LINK_DEFS) llmVals[k] = settings.values[k] ?? "1";
+          // llm_zen — исключение: opt-in, дефолт "0" (free-tier Zen недоступен серверам)
+          for (const k of LLM_LINK_DEFS) llmVals[k] = settings.values[k] ?? (k === "llm_zen" ? "0" : "1");
           return json(
             {
               values: { quota_anon: lim.anon, quota_user: lim.user, cost_fast: lim.fast, cost_deep: lim.deep, cost_followup: lim.followup, explain_cap: lim.explainCap, cap_groq_rpd: lim.groqCap, cap_embed_rpd: lim.embedCap, ...llmVals },

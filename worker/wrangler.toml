@@ -16,16 +16,27 @@ database_id = "da22e294-4ec2-4c9c-82b6-b6201c78d147"
 # binding = "NORMS"
 # bucket_name = "snip-norms"
 
+# Workers AI — звено LLM-фолбэка (10k neurons/день бесплатно, без ключа).
+# Без привязки в Dashboard звено просто пропускается (код проверяет env.AI).
+[ai]
+binding = "AI"
+
 [vars]
-GROQ_MODEL = "openai/gpt-oss-120b"
+GROQ_MODEL = "openai/gpt-oss-20b"
 EMBED_MODEL = "gemini-embedding-001"
 INDEX_BASE_URL = "https://snippy-llm.pages.dev/index"
 ALLOWED_ORIGINS = "https://snippy-llm.pages.dev,https://*.pages.dev,http://localhost:5173"
 CREDITS_ANON = "30"
-CREDITS_USER = "50"
+CREDITS_USER = "300"
 FAST_COST = "5"
 DEEP_COST = "10"
+OPENROUTER_MODEL = "google/gemma-4-31b-it:free"
 
 # Секреты (не в git): npx wrangler secret put JWT_SECRET / GROQ_API_KEY / GEMINI_API_KEY
+# Резервные LLM-звенья /ask (цепочка: Groq → Groq-alt → Gemini → Cerebras → OpenRouter →
+# DeepSeek → Mistral → Cohere → Custom → Workers AI → Zen → Pollinations → extractive):
+#   npx wrangler secret put CEREBRAS_API_KEY / OPENROUTER_API_KEY / DEEPSEEK_API_KEY /
+#     COHERE_API_KEY / MISTRAL_API_KEY / LLM_CUSTOM_KEY / OPENCODE_API_KEY (Zen free: mimo-v2.5-free)
+# Опционально в [vars]: OPENROUTER_MODEL, LLM_CUSTOM_BASE, LLM_CUSTOM_MODEL, GEMINI_TEXT_MODEL
 # Резервные эмбеддинг-провайдеры (нужен только тот, кем собран индекс —
 # см. provider в manifest.json): JINA_API_KEY / VOYAGE_API_KEY / COHERE_API_KEY / MISTRAL_API_KEY
