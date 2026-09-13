@@ -18,15 +18,38 @@ esac
 done
 
 cd "$ROOT"
+IDX="frontend/public/index"
 
 if [ "$SKIP_BUILD" -eq 0 ]; then
-  echo "── 1/4 Сборка поискового индекса из norms/"
+  OLD_COUNT=$("$PY" -c "import json;print(json.load(open('$IDX/manifest.json'))['count'])" 2>/dev/null || echo 0)
+  echo "── 1/5 Сборка поискового индекса из norms/"
   "$PY" scripts/build_index.py
 else
-  echo "── 1/4 Сборка пропущена (--skip-build — использую готовый индекс)"
+  echo "── 1/5 Сборка пропущена (--skip-build — использую готовый индекс)"
 fi
 
-echo "── 2/4 Копирование PDF в статику (frontend/public/norms)"
+echo "── 2/5 Шардирование индекса (лимит Pages 25 МиБ на файл)"
+"$PY" scripts/shard_index.py "$IDX"
+
+echo "── 3/5 Гейты качества"
+"$PY" scripts/verify_values.py --index "$IDX" --samples 0 > /tmp/rebuild_values_gate.txt 2>&1 || {
+  echo "❌ verify_values упал — смотри /tmp/rebuild_values_gate.txt"; exit 1; }
+SUSP_PCT=$(grep -o 'подозрительных: [0-9]* ([0-9.]*%' /tmp/rebuild_values_gate.txt | grep -o '([0-9.]*' | tr -d '(' || echo 100)
+if "$PY" -c "import sys; sys.exit(0 if float('$SUSP_PCT') < 2.0 else 1)"; then
+  echo "✅ шум values: ${SUSP_PCT}% (<2%)"
+else
+  echo "❌ шум values: ${SUSP_PCT}% — смотри /tmp/rebuild_values_gate.txt"; exit 1
+fi
+if [ "$SKIP_BUILD" -eq 0 ] && [ "$OLD_COUNT" != "0" ]; then
+  NEW_COUNT=$("$PY" -c "import json;print(json.load(open('$IDX/manifest.json'))['count'])")
+  echo "чанков: было $OLD_COUNT → стало $NEW_COUNT"
+  if [ "$NEW_COUNT" -lt "$OLD_COUNT" ]; then
+    echo "❌ индекс ужался — разбирайся вручную"; exit 1
+  fi
+fi
+echo "✅ гейты пройдены"
+
+echo "── 4/5 Копирование PDF в статику (frontend/public/norms)"
 mkdir -p frontend/public/norms
 find norms -type f -iname '*.pdf' -not -name '.DS_Store' | while IFS= read -r pdf; do
   name="$(basename "$pdf")"
@@ -53,21 +76,21 @@ if [ "$SKIP_R2" -eq 0 ]; then
 fi
 
 if [ "$SKIP_R2" -eq 0 ] && [ "$R2_AVAILABLE" -eq 1 ]; then
-  echo "── 3/4 Загрузка PDF в R2 (snip-norms)"
+  echo "── 4/5 (R2) Загрузка PDF в snip-norms"
   find norms -type f -iname '*.pdf' -not -name '.DS_Store' | while IFS= read -r pdf; do
     name="$(basename "$pdf")"
     echo "   ↑ $name"
     npx wrangler r2 object put "snip-norms/$name" --file "$pdf" --remote --content-type application/pdf >/dev/null
   done
 else
-  echo "── 3/4 R2 пропущен ($([ "$SKIP_R2" -eq 1 ] && echo '--skip-r2' || echo 'бакет не активирован: Cloudflare Dashboard → R2 → Enable'))"
+  echo "── 4/5 (R2) пропущен ($([ "$SKIP_R2" -eq 1 ] && echo '--skip-r2' || echo 'бакет не активирован: Cloudflare Dashboard → R2 → Enable'))"
 fi
 
 if [ "$SKIP_PAGES" -eq 0 ]; then
-  echo "── 4/4 Деплой фронта"
+  echo "── 5/5 Деплой фронта"
   (cd frontend && npm run build >/dev/null && npx wrangler pages deploy dist --project-name snippy-llm --branch master --commit-dirty=true)
 else
-  echo "── 4/4 Pages пропущен (--skip-pages)"
+  echo "── 5/5 Pages пропущен (--skip-pages)"
 fi
 
 echo "✅ Готово. Поиск обновится на проде в течение минуты."

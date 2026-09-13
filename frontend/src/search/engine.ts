@@ -3,7 +3,8 @@
  * Порт логики backend/app/search/hybrid.py (RRF k=60, синонимы, relevance_percent)
  * и токенизатора scripts/build_index.py — правила ДОЛЖНЫ совпадать 1:1.
  *
- * Артефакты: /index/{manifest,docs,chunks,bm25,synonyms}.json + /index/vectors.bin
+ * Артефакты: /index/{manifest,docs,bm25,synonyms}.json + чанки/векторы шардами
+ * (chunks_{k}.json / vectors_{k}.bin по manifest.shards; без shards — chunks.json/vectors.bin)
  * Формат vectors.bin: "SNV1" | u32 dim | u32 count | f32[count] scales | i8[count*dim]
  */
 import { tokenize } from "../utils/stem";
@@ -146,24 +147,35 @@ let bundlePromise: Promise<IndexBundle> | null = null;
 export function loadIndex(base = "/index"): Promise<IndexBundle> {
   if (bundlePromise) return bundlePromise;
   bundlePromise = (async () => {
-    const j = async <T>(p: string): Promise<T> => (await fetch(`${base}/${p}`)).json();
+    const j = async <T>(p: string): Promise<T> => {
+      const r = await fetch(`${base}/${p}`);
+      if (!r.ok) throw new Error(`index: ${p} → HTTP ${r.status}`);
+      return r.json() as Promise<T>;
+    };
     const manifest = await j<Manifest>("manifest.json");
     const [docs, bm25, synonyms] = await Promise.all([
       j<DocInfo[]>("docs.json"),
       j<Bm25Index>("bm25.json"),
       j<Record<string, string[]>>("synonyms.json"),
     ]);
-    // Шарды (manifest.shards) или классические одиночные файлы
-    const nChunkShards = manifest.shards?.chunks ?? 1;
-    const nVecShards = manifest.shards?.vectors ?? 1;
-    const chunkParts: Promise<ChunkMeta[]>[] = [];
-    for (let k = 0; k < nChunkShards; k++) chunkParts.push(j<ChunkMeta[]>(`chunks_${k}.json`));
-    const chunks: ChunkMeta[] = ([] as ChunkMeta[]).concat(...(await Promise.all(chunkParts)));
+    // Чанки: шарды по manifest.shards.chunks или классический одиночный chunks.json
+    const nChunkShards = manifest.shards?.chunks ?? 0;
+    const chunks: ChunkMeta[] =
+      nChunkShards > 0
+        ? ([] as ChunkMeta[]).concat(
+            ...(await Promise.all(Array.from({ length: nChunkShards }, (_, k) => j<ChunkMeta[]>(`chunks_${k}.json`))))
+          )
+        : await j<ChunkMeta[]>("chunks.json");
 
     // Векторы: читаем все шарды и склеиваем scales + int8 в единые буферы
+    // (без manifest.shards — классический одиночный vectors.bin)
+    const nVecShards = manifest.shards?.vectors ?? 0;
     const shardBufs = await Promise.all(
-      Array.from({ length: nVecShards }, (_, k) =>
-        fetch(k === 0 && nVecShards === 1 ? `${base}/vectors.bin` : `${base}/vectors_${k}.bin`).then((r) => r.arrayBuffer())
+      Array.from({ length: Math.max(1, nVecShards) }, (_, k) =>
+        fetch(`${base}/${nVecShards === 0 ? "vectors.bin" : `vectors_${k}.bin`}`).then((r) => {
+          if (!r.ok) throw new Error(`index: vectors_${k}.bin → HTTP ${r.status}`);
+          return r.arrayBuffer();
+        })
       )
     );
     let dim = 0;
@@ -188,7 +200,7 @@ export function loadIndex(base = "/index"): Promise<IndexBundle> {
       sOff += s.scales.byteLength / 4;
       dOff += s.data.byteLength;
     }
-    if (totalCount !== chunks.length) throw new Error("vectors.bin не совпадает с chunks.json");
+    if (totalCount !== chunks.length) throw new Error(`индекс рассинхронизирован: векторов ${totalCount}, чанков ${chunks.length}`);
     return { manifest, docs, chunks, bm25, synonyms, dim, count: totalCount, scales, int8 };
   })();
   return bundlePromise;

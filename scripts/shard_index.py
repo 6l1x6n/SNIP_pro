@@ -1,7 +1,8 @@
 """
-shard_index.py — режет vectors.bin и chunks.json на шарды ≤20 MiB (лимит Pages),
-обновляет manifest.json (поля shards.vectors / shards.chunks). Совместимо:
-лоадеры при отсутствии shards читают старые файлы.
+shard_index.py — режет vectors.bin и chunks.json на шарды ≤4 MiB
+(лимит Pages — 25 MiB на файл; мельче — надёжнее для POST-батчей к Pages API),
+обновляет manifest.json (поля shards.vectors / shards.chunks). Идемпотентно:
+повторный запуск склеивает шарды обратно в монолиты и режет заново.
 """
 import json
 import struct
