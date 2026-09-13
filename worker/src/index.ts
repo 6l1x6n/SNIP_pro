@@ -1423,6 +1423,27 @@ function rerankLinks(env: Env): RerankLink[] {
       },
     });
   }
+  if (env.JINA_API_KEY) {
+    links.push({
+      id: "jina-rerank",
+      run: async (query, texts, topN) => {
+        const r = await fetch("https://api.jina.ai/v1/rerank", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.JINA_API_KEY}` },
+          body: JSON.stringify({
+            model: "jina-reranker-v2-base-multilingual",
+            query,
+            documents: texts.map((t) => String(t ?? "").slice(0, 4000)),
+            top_n: topN,
+          }),
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!r.ok) throw statusError("jina-rerank", r, await r.text());
+        const d: any = await r.json();
+        return rerankOrderFromPairs(d.results ?? [], texts.length, topN);
+      },
+    });
+  }
   // LLM-listwise: gpt-oss-20b выбирает лучшие фрагменты (русский держит хорошо).
   links.push({
     id: "llm-rerank",
