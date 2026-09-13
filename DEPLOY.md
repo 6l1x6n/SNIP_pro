@@ -1,6 +1,34 @@
-# Деплой SNIP.pro — бесплатно, Cloudflare Pages / Workers + Render
+# Деплой SNIP.pro — Cloudflare Pages (фронт) + Workers + D1 (бэк)
 
-Текущий прод: **фронт** `https://snippy-llm.pages.dev` (Pages проект `snippy-llm`, `https://f7614645.snippy-llm.pages.dev`), **Git** `https://github.com/6l1x6n/SNIP_pro` `master` `538f202`. Бэк отдельно.
+Текущий прод: **фронт** `https://snippy-llm.pages.dev` (Pages проект `snippy-llm`), **воркер** `https://snip-worker.postalarchive.workers.dev` (auth/кредиты/`/ask`/`/embed`), **D1** `snip-db`, **индекс** `https://snippy-llm.pages.dev/index`. **Git** `https://github.com/6l1x6n/SNIP_pro`.
+
+## Актуальные vars воркера (`worker/wrangler.toml`)
+
+`CREDITS_ANON=30` (гости, сброс 00:00 UTC) • `CREDITS_USER=300` (акция: юзеры 300⚡/час) • `FAST_COST=5` • `DEEP_COST=10` • `ADMIN_EMAILS` в коде: `postalarchive@gmail.com`, `aidos77_77@mail.ru` (демо-оплата только им).
+
+## Деплой после изменений (проверено 07.09.2026)
+
+```bash
+# 1. Воркер (миграция имени — один раз, уже применена на remote):
+npx wrangler d1 execute snip-db --remote --command "ALTER TABLE users ADD COLUMN full_name TEXT;"
+npx wrangler d1 execute snip-db --remote --command "ALTER TABLE users ADD COLUMN name_changed_at TEXT;"
+cd worker && npm run deploy  # → https://snip-worker.postalarchive.workers.dev (Version ID в логе)
+curl -s https://snip-worker.postalarchive.workers.dev/api/credits -H "X-Device-Id: check" # {"reset":"daily",...} для гостя
+
+# 2. Фронт:
+cd frontend && npm run build
+npx wrangler pages deploy dist --project-name snippy-llm --branch master --commit-dirty=true
+# → preview https://<hash>.snippy-llm.pages.dev + прод https://snippy-llm.pages.dev
+```
+
+## Что изменилось в этом релизе (07.09.2026)
+
+- Гостям «Пополнить баланс →» открывает регистрацию (был мёртвый клик: `CreditsPanel` без `onTopUp`).
+- Акция 300⚡/час юзерам (`periodKey`: час для юзеров / день для гостей; `reset` в `/api/credits`).
+- Демо-оплата только админам (бэк `403 billing_disabled` + disabled-кнопки с хинтом).
+- Имя раз в 30 дней: `PATCH /api/me`, ахтунг-`ConfirmDialog`, первая установка свободна.
+- Профиль: вместо «Библиотека • Личная программа» — «Нормативная база в поиске» + «Ваша статистика».
+- Документы гостям: blur + «Для просмотра войдите», PDF заблокирован.
 
 ## Вариант C (рекомендуется, 0₸, без карты): Cloudflare Pages — фронт, Render/Fly — бэк
 

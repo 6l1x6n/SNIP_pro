@@ -79,6 +79,8 @@ interface IndexBundle {
   int8: Int8Array;
 }
 
+export type { IndexBundle };
+
 // ---------- Токенизатор (зеркало build_index.py; реализация в utils/stem.ts) ----------
 // (импорт tokenize — в шапке файла)
 
@@ -236,7 +238,23 @@ function ranksFrom(scores: Map<number, number>): Array<[number, number]> {
   return [...scores.entries()].sort((a, c) => c[1] - a[1]);
 }
 
-export async function search(query: string, opts?: { mode?: SearchMode; topK?: number; embed?: EmbedFn }): Promise<SearchResult> {
+/** BM25-кандидаты по одному запросу (расширение candidate-пула rewrite-запросами, без влияния на базовый ранжир). */
+export async function bm25TopIds(query: string, k: number): Promise<number[]> {
+  const b = await loadIndex();
+  const scores = bm25Scores(tokenize(normalizeQuery(query)), b);
+  return ranksFrom(scores).slice(0, k).map(([i]) => i);
+}
+
+/** Векторные кандидаты по одному запросу (кросс-язык/kz: rewrite-перевод ищет по смыслу). */
+export async function vectorTopIds(query: string, k: number, embed: EmbedFn): Promise<number[]> {
+  const b = await loadIndex();
+  const qv = await embed(query);
+  const scores = new Map<number, number>();
+  for (let i = 0; i < b.count; i++) scores.set(i, dotQueryInt8(qv, b, i));
+  return ranksFrom(scores).slice(0, k).map(([i]) => i);
+}
+
+export async function search(query: string, opts?: { mode?: SearchMode; topK?: number; embed?: EmbedFn; extraVariants?: string[]; vectorQueries?: string[] }): Promise<SearchResult> {
   const t0 = performance.now();
   const mode = opts?.mode ?? "fast";
   const topK = opts?.topK ?? (mode === "deep" ? 20 : 10);
@@ -251,13 +269,35 @@ export async function search(query: string, opts?: { mode?: SearchMode; topK?: n
   const synonyms = sem ? { ...SEMANTIC_SYNONYMS, ...b.synonyms } : b.synonyms;
   const maxVariants = mode === "deep" ? (sem ? 5 : 3) : sem ? 3 : 1;
   const variants = expandVariants(query, synonyms, maxVariants);
+  // LLM-переформулировки (smart_rewrite): добавляем как BM25-варианты, база сохраняет приоритет.
+  for (const raw of opts?.extraVariants ?? []) {
+    const v = normalizeQuery(raw);
+    if (v && !variants.includes(v) && variants.length < maxVariants + 3) variants.push(v);
+  }
   // Safety: вектор может лечь (Cohere 429 → worker 429 → searchClient ретраи исчерпаны).
   // Вместо жёсткой ошибки деградируем до BM25-only как backend/app/search/hybrid.py (q_emb=None).
   let qVec: number[] | null = null;
   let embedError: any = null;
   try {
-    qVec = await embed(query);
+    // Вектор исходного запроса + (в deep) векторы переформулировок: усредняем в один скан.
+    const vecQueries = [query, ...new Set((opts?.vectorQueries ?? []).filter((q) => q && q !== query))].slice(0, 3);
+    const settled = await Promise.allSettled(vecQueries.map((q) => embed(q)));
+    if (settled[0].status === "rejected") throw settled[0].reason;
+    const vecs = settled.flatMap((s) => (s.status === "fulfilled" ? [s.value] : []));
+    if (vecs.length === 1) {
+      qVec = vecs[0];
+    } else {
+      const dim = vecs[0].length;
+      const avg = new Array<number>(dim).fill(0);
+      for (const v of vecs) for (let j = 0; j < dim; j++) avg[j] += v[j] ?? 0;
+      const norm = Math.hypot(...avg) || 1;
+      qVec = avg.map((x) => x / norm);
+    }
   } catch (e: any) {
+    // 402 = нет кредитов: не деградируем в бесплатный BM25, пробрасываем наверх,
+    // иначе stale-баланс даст бесплатный обход оплаты. Локальный fallback
+    // (noNetwork) — деградирует как раньше, сети и квот там нет.
+    if (e?.insufficientCredits && !e?.noNetwork) throw e;
     embedError = e;
     console.warn("embed недоступен — поиск только по BM25", e?.status ?? "", e?.provider ?? "", e?.message ?? e);
   }

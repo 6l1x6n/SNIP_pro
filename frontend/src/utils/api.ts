@@ -23,13 +23,40 @@ function getOrCreateDeviceId(): string {
 
 export const DEVICE_ID = getOrCreateDeviceId()
 
+/** Событие «сессия протухла»: AuthProvider слушает и чистит user/token. */
+export const AUTH_EXPIRED_EVENT = 'snip:auth-expired'
+
+/** Коды 401, при которых токен мёртв и его надо удалить (а не держать «фантомную» сессию). */
+const DEAD_TOKEN_ERRORS = new Set(['token_expired', 'invalid_token', 'unauthorized'])
+
+function notifyAuthExpired() {
+  try {
+    localStorage.removeItem('snip_token')
+  } catch {}
+  try {
+    window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT))
+  } catch {}
+}
+
 /**
  * Authenticated fetch to the Worker. Sends JWT + X-Device-Id.
+ * При 401 с мёртвым токеном — чистит токен и шлёт AUTH_EXPIRED_EVENT,
+ * ответ при этом возвращается вызывающему как есть (без скрытых ретраев).
  */
 export async function authFetch(input: RequestInfo, init: RequestInit = {}): Promise<Response> {
   const headers: Record<string, string> = { ...(init.headers as Record<string, string> || {}) }
   const t = localStorage.getItem('snip_token')
   if (t) headers['Authorization'] = `Bearer ${t}`
   headers['X-Device-Id'] = DEVICE_ID
-  return fetch(input, { ...init, headers })
+  const r = await fetch(input, { ...init, headers })
+  if (r.status === 401) {
+    try {
+      const clone = r.clone()
+      const d = (await clone.json().catch(() => ({}))) as any
+      if (DEAD_TOKEN_ERRORS.has(String(d?.error || 'unauthorized'))) notifyAuthExpired()
+    } catch {
+      /* тело не прочиталось — токен не трогаем */
+    }
+  }
+  return r
 }

@@ -19,7 +19,23 @@ paraphrase-multilingual-MiniLM-L12-v2 384d → PostgreSQL (pgvector HNSW + GIN t
 → ответ с доказательством (is_grounded, quote, paragraph, page)
 ```
 
+**Карточки значений (09.2026, прод):** `scripts/values_extract.py` извлекает числовые требования
+(`ширина:коридор ≥1,4 м`) при сборке → `frontend/public/index/values.json` (7484 факта, manifest v2).
+Фактоид-запросы закрываются БЕЗ LLM и БЕЗ списания: фронт (`search/values.ts` + `SearchView`) показывает
+полоску карточек (0⚡), воркер `/api/ask` отвечает `provider:"values", free:true` до `chargeHybrid`.
+Незаземлённые строки уходят в LLM-промпт как проверенные значения. `scripts/verify_values.py` — отчёт качества.
+`--reuse-vectors` в `build_index.py`: кэш эмбеддингов `.index_cache/` по sha256 чанка (пересборка без API-квоты).
+D1 `embed_cache` (30 дней, общий): повторные вопросы — 0 вызовов API эмбеддингов (`embedQuery`).
+
+**Смарт-контур «Сниппи v2» (10.09.2026, прод):** чтобы Сниппи не тупил, `/api/ask` получил четыре слоя.
+1. **Понимание запроса** `POST /api/rewrite` (`worker/src/index.ts` `rewriteSmart`): дешёвая LLM (Groq, таймаут 4с) даёт `{standalone, queries[2-3], terms[]}`, вырезает выдуманные номера СНиП. D1 `rewrite_cache` (тег версии промпта + сборки индекса, 30 дней). Уточнения переформулируются с историей в самодостаточный вопрос.
+2. **Расширение кандидатов** (фронт `useSearch.ts` + `engine.ts`): базовый гибридный ранжир не меняется; BM25-хиты rewrite-запросов и векторные хиты русских переформулировок (важно для kz) добавляются в пул к top-24 → до 32 кандидатов.
+3. **Reranking** `worker/src/index.ts` `rerankContexts`: каскад Voyage `rerank-2` → Cohere `rerank-multilingual-v3.0` → LLM-listwise (Groq) → исходный порядок; `@cf/baai/bge-reranker-base` (en/zh) на русском хвост портит — только для force-замеров. Бюджеты/брейкеры в `llm_budget` (`budget_*_rerank`), contextTopN: simple 4 / standard 6 / complex 8.
+4. **Ответы**: prompt v2 (числа только из цитаты, сравнения построчно, частичный ответ не прячется) + **второй проход** при `is_grounded=false` (`smart_second_pass`) + существующий numeric-gate. Сравнения («сравните/чем отличается») всегда уходят в LLM с values-строками. Флаги в settings: `smart_rewrite`, `smart_rerank`, `smart_second_pass`.
+Метрики: `ledger.meta` `{route, cands, rerank, sp, g}`, сводка за сутки — `GET /api/admin/health → smart{}`. Линейка: `scripts/eval/golden.jsonl` (46 кейсов) + `scripts/eval_search.py` (`--rewrite --rewrite-candidates --rewrite-vec-candidates --rerank`), baseline 09.2026: Hit@1 32.6% / Hit@3 63.0% / MRR 0.484; смарт-контур на том же наборе 32.6–34.8% / 63.0–65.2% / MRR 0.487–0.516 при квотах trial-провайдеров (разброс — какой rerank-линк доступен).
+
 **Ключевой файл:** `backend/app/main.py:24` `lifespan` (создает `vector`, `pg_trgm`, `idx_chunks_*`), `backend/app/config.py:9` `Settings`, `backend/app/search/hybrid.py:335` — ядро.
+
 
 ### Поток данных
 1. **Collector** `backend/app/collector/sources/adilet.py:114` парсит `adilet.zan.kz` (BeautifulSoup `a[href*=/rus/docs/]`), фильтр `СНиП/СН РК`, статус `утратил/заменён`, `download_pdf` по `a[href$=.pdf]`, checksum, `replaced_by_id`. `backend/app/collector/scheduler.py:89` APScheduler ежедневно `02:00 Asia/Almaty` (включается `ENABLE_COLLECTOR=1`).
@@ -94,6 +110,7 @@ SNIP_pro/
 * `Document` `id UUID pk`, `number String(200) unique`, `title/title_kz`, `type/category`, `status enum active/replaced/expired/amended/draft/archived`, `publication_date/effective_date`, `language`, `pdf_path`, `checksum`, `replaced_by_id FK`, `owner_id UUID FK users(CASCADE) idx` (личные vs общие `owner_id IS NULL`), `created_at/updated_at`, `chunks cascade delete`
 * `Chunk` `id UUID`, `document_id FK`, `paragraph String(100) idx`, `section/chapter`, `page/page_bbox JSON`, `text Text`, `text_tsv Text` (GIN `to_tsvector(russian)`), `type paragraph|table|note`, `embedding Vector(384) HNSW cosine`, `token_count`
 * `DocumentVersion`, `CollectorLog(status/details/created_at)`, `User(email unique, hashed_password bcrypt, api_key 120 unique, is_active/superuser)`, `PinnedDocument(user_id, document_id/chunk_id unique 50 limit)`
+* **D1 (прод Worker):** `users(id,email,password_hash,plan,full_name,name_changed_at,created_at)`, `usage(day,subject,count)` — ключ дня для гостей / часа для юзеров, `balances`, `ledger`, `subscriptions`, `purchases`, `explain_usage`, `explain_cache` (`worker/schema.sql`).
 
 Индексы создаются в `backend/app/main.py:58` `idx_chunks_tsv` GIN + `idx_chunks_embedding` HNSW (self-healing без Alembic).
 
@@ -111,15 +128,17 @@ SNIP_pro/
 
 ---
 
-## 6. Квота и лимиты
+## 6. Квота и лимиты (акция, прод Worker)
 
-**Текущее (безлимит для Pages free):**
-* `backend/app/config.py:47` `quota_enabled=False` (`QUOTA_ENABLED=0` в `.env`), `quota_anon_limit=999999` `quota_registered_limit=999999` `quota_window_hours=24`
-* `backend/app/core/quota.py:13` `ANON_QUOTA=999999` `REGISTERED_QUOTA=999999`, `check_quota` `quota.py:31` early return `remaining 999999` если `quota_enabled=False`, ключ `anon:X-Device-Id` (`frontend/src/utils/api.ts:31` `crypto.randomUUID` `snip_device_id`) или `user:<uuid>`, in-memory `dict count/first_seen` (сброс при рестарте, не шарится между `workers=2` — для прода нужен Redis)
-* `backend/app/main.py:110` `Limiter 1000/minute` если безлимит, иначе `200/min`, `backend/app/api/search.py:51` `@limiter 1000/min` (было `30/min`)
-* Фронт `frontend/src/hooks/useSearch.ts:98` ловит `429` → `quotaExceeded` модалка, иначе `X-Quota-Remaining/Limit` `search.py:210`
-
-**Старое:** `ANON 30 lifetime / REGISTERED 200` — бьет за 10 мин демо, поэтому отключено.
+* **Акция:** зарегистрированные — **300⚡ каждый час** (`CREDITS_USER=300`, ключ периода `YYYY-MM-DDTHH`), гости — **30⚡/день** (`CREDITS_ANON=30`, ключ `YYYY-MM-DD`, сброс 00:00 UTC). Таблица `usage(day,subject)` хранит оба формата ключей, миграция не нужна.
+* `worker/src/index.ts` `periodKey(isUser)`, `getCreditsState` возвращает `reset:'hourly'|'daily'`; `chargeHybrid`/`refundCharge` списывают сначала периодный лимит, затем `balances`. Фронт `utils/credits.ts:resetLabel` показывает «Обновляется каждый час (акция: 300⚡/час)» юзерам.
+* **Бесплатно (0⚡, без LLM):** полоска карточек во фронте (локально); `embed_cache` (D1, 30d) — повторные эмбеддинги запросов бесплатны для квоты API.
+* **Экономика «платят всегда» (09.2026):** списываются все ответы `/api/ask` — LLM, хит `ask_cache` и values (values-блок после `chargeHybrid`, `free:false`); исключение — спам дублем <10с режется на клиенте (ни сети, ни списания). Полоска карточек — витрина 0⚡.
+* **Circuit breaker + дневные бюджеты (09.2026):** D1 `llm_budget(provider,variant,day,used,down_until)` — один SELECT на обход; 429/5xx глушат звено (Retry-After, иначе 60с, кап 10 мин), исчерпанный бюджет — скип до 00:00 UTC; все скипнуты → сразу extractive (`budgetExhausted`, `why:"budgets"` в ledger). Капы — `LLM_BUDGET_DEFAULTS` + override `budget_<id>` в settings (0 = мягкий kill). Видимость — `GET /api/admin/health → llm[]`.
+* **Свежесть норм (09.2026):** дата базы в UI (`manifest.builtAt` → «база от …»); бейджи `status` (заменён/утратил) в карточках/ответах/модалке (`statusBadge`); ключи `ask_cache`/`embed_cache` версионированы `builtAt` индекса; полуавтомат `scripts/norms_refresh.sh` (diff → аппрув → build `--reuse-vectors` → гейты → deploy) + `scripts/check_updates.py`.
+* **Роутер сложности (09.2026):** воркер `classifyAsk` → simple (top3/600 tok) / standard / complex (1200 tok); метрика `route` в `ledger.meta`. Смарт-чипсы типов зданий под values-ответом (фронт, тап дописывает тип к вопросу → docHit-буст).
+* **Демо-оплата только админам:** `ADMIN_EMAILS = postalarchive@gmail.com, aidos77_77@mail.ru` (`worker/src/index.ts`, `frontend/src/utils/admin.ts`). `POST /api/billing/purchase` → `403 billing_disabled` для не-админов; кнопки «Пополнить/Купить» у остальных `disabled` + хинт про Kaspi/карты скоро.
+* Costs: `FAST_COST=5`, `DEEP_COST=10`. Explain-кап подписчиков — `EXPLAIN_DAILY_CAP=40`/день (не менялся).
 
 ---
 
@@ -226,25 +245,21 @@ curl http://localhost:8001/api/health  # через Caddy :80
 
 ---
 
-## 9. API (`README.md:108`)
+## 9. API (прод — Worker; legacy FastAPI ниже в README)
 
 ```
-POST /api/search {query, mode:fast|deep, top_k, filters:{type,status,document_id}} → {answer, results, took_ms}
-GET  /api/search?q=...&mode=fast&top_k=10
-GET  /api/documents?status=active&skip=0&limit=50
-GET  /api/documents/{id}
-GET  /api/documents/{id}/pdf → FileResponse
-GET  /api/documents/{id}/chunks
-GET  /api/stats
-GET  /api/health → {status:ok, db:bool, mode:no_db?}
-POST /api/admin/documents/upload (multipart file, doc_number, title, doc_type)
-POST /api/admin/collector/run
-GET  /api/admin/collector/logs
-POST /api/auth/register {email,password,full_name} 5/hour
-POST /api/auth/login (OAuth2 form) 10/min
-GET  /api/auth/me
-POST /api/auth/api-key/regenerate (sk-)
-GET/POST/DELETE /api/pins (до 50)
+POST /api/auth/register {email,password,full_name?} → {uid,email,full_name,token}
+POST /api/auth/login {email,password} → {uid,email,full_name,token}
+GET  /api/me → {uid,email,full_name,name_changed_at,name_can_change_at,created_at,is_admin,credits}
+PATCH /api/me {full_name} → смена имени раз в 30 дней (первая установка свободна, иначе 429 name_cooldown)
+GET  /api/credits → {daily:{used,limit,remaining},balance,plan,reset}
+POST /api/credits/spend {mode} → 402 insufficient_credits
+GET  /api/credits/history?limit=
+POST /api/billing/purchase {sku} → только ADMIN_EMAILS, иначе 403 billing_disabled
+POST /api/ask {query,mode,chunkIds|candidates[≤32],followUp,history} → списание DEEP_COST, rerank + Groq с заземлением
+POST /api/rewrite {query,history?,followUp?} → {standalone,queries,terms} — понимание запроса, 0⚡, D1-кэш 30д
+POST /api/embed {query} → float[]
+POST /api/explain {text,doc_number?} → только Pro/Business
 ```
 
 `X-Quota-Remaining/Limit` + `X-Device-Id` `frontend/src/utils/api.ts:31`, `Authorization Bearer JWT / X-API-Key sk-` `backend/app/core/deps.py:42`.
@@ -265,7 +280,7 @@ GET/POST/DELETE /api/pins (до 50)
 
 ## 11. Ограничения MVP (`README.md:172`)
 
-* [ ] Reranker `bge-reranker-v2-m3` (сейчас RRF)
+* [ ] Cross-encoder reranker с оплаченным ключом (trial-квоты Voyage 3 RPM / Cohere 10 RPM текут; сейчас каскад + LLM-listwise)
 * [ ] Таблицы `camelot/tabula` `type=table`
 * [ ] OCR `tesseract rus/kaz` уже в `backend/Dockerfile:11`
 * [ ] Кэш embeddings Redis

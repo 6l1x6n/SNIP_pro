@@ -1,7 +1,26 @@
 import React from 'react'
 import { loadCustomPalettes, type CustomPalette } from './highlightPresets'
+import { SEMANTIC_SYNONYMS } from './semanticSynonyms'
+import { isSemanticMode } from '../search/engine'
 
 export type PaletteId = string
+
+/** Режим акцента контекста в PDF: заливка зоны или стикер со стрелкой сбоку. */
+export type ContextMarkMode = 'fill' | 'sticker'
+
+const CONTEXT_MARK_MODE_KEY = 'snip_context_mark_mode'
+
+export function loadContextMarkMode(): ContextMarkMode {
+  try {
+    const v = localStorage.getItem(CONTEXT_MARK_MODE_KEY)
+    if (v === 'sticker' || v === 'fill') return v
+  } catch {}
+  return 'fill'
+}
+
+export function saveContextMarkMode(v: ContextMarkMode) {
+  try { localStorage.setItem(CONTEXT_MARK_MODE_KEY, v) } catch {}
+}
 
 export type PaletteColor = {
   bg: string
@@ -129,9 +148,9 @@ export function extractTokens(query: string): string[] {
   return dedup
 }
 
-export function buildTokenMap(query: string, paletteId: string = 'default', monoHex?: string): { tokens: string[]; tokenMap: Map<string, TokenInfo>; regex: RegExp | null } {
+export function buildTokenMap(query: string, paletteId: string = 'default', monoHex?: string): { tokens: string[]; tokenMap: Map<string, TokenInfo>; regex: RegExp | null; synRules: { re: RegExp; info: TokenInfo }[] } {
   const tokens = extractTokens(query)
-  if (tokens.length === 0) return { tokens: [], tokenMap: new Map(), regex: null }
+  if (tokens.length === 0) return { tokens: [], tokenMap: new Map(), regex: null, synRules: [] }
   let palette = getPalette(paletteId)
   // моно: один цвет для всех токенов, если выбран monoHex — используем его
   if (paletteId==='mono' && monoHex) {
@@ -144,55 +163,125 @@ export function buildTokenMap(query: string, paletteId: string = 'default', mono
     const col = paletteId==='mono' && monoHex ? palette[0] : palette[i % palette.length]
     tokenMap.set(t.toLowerCase(), { token: t, index: i, color: col })
   })
+  // Смысловой режим: варианты синонимов красятся цветом исходного токена
+  // («элементами ограждения» — тем же цветом, что «перилами»).
+  // Точная форма + префикс с допуском окончания: покрывает склонения
+  // («поручни», «поручня») и букву ё. Класс [а-яё] — ё вне диапазона а-я.
+  const synFrags: string[] = []
+  const synInfos: TokenInfo[] = []
+  const seenFrag = new Set<string>()
+  if (isSemanticMode()) {
+    for (const t of tokens) {
+      const info = tokenMap.get(t.toLowerCase())
+      if (!info) continue
+      for (const [rawKey, syns] of Object.entries(SEMANTIC_SYNONYMS)) {
+        // Ключ нормализуем как запрос (ё→е): токены уже нормализованы,
+        // иначе «проём» не совпадёт с токеном «проем».
+        const key = rawKey.toLowerCase().replace(/ё/g, 'е')
+        if (!t.toLowerCase().includes(key)) continue
+        for (const s of syns) {
+          const words = s.toLowerCase().replace(/ё/g, 'е').split(/\s+/).filter(Boolean)
+          if (!words.length) continue
+          const frag = words
+            .map((w) => `(?:${yoVariants(w)}|${yoVariants(w.slice(0, Math.min(5, w.length)))}[а-яё]{0,6})`)
+            .join('\\s+')
+          if (seenFrag.has(frag)) continue
+          seenFrag.add(frag)
+          synFrags.push(frag)
+          synInfos.push(info)
+        }
+      }
+    }
+  }
   // Build regex longest first — with ё/е variants
   const sorted = [...tokens].sort((a, b) => b.length - a.length)
-  const pattern = sorted.map(t => yoVariants(t)).join('|')
+  const pattern = [...sorted.map(t => yoVariants(t)), ...synFrags.map((f) => `(?:${f})`)].join('|')
+  const synRules: { re: RegExp; info: TokenInfo }[] = []
+  synFrags.forEach((f, k) => {
+    try {
+      synRules.push({ re: new RegExp(`^(?:${f})$`, 'i'), info: synInfos[k] })
+    } catch {}
+  })
   try {
     const regex = new RegExp(`(${pattern})`, 'gi')
-    return { tokens, tokenMap, regex }
+    return { tokens, tokenMap, regex, synRules }
   } catch {
-    return { tokens, tokenMap, regex: null }
+    return { tokens, tokenMap, regex: null, synRules: [] }
   }
 }
 
 export function highlightText(text: string, query: string, paletteId: string = 'default', monoHex?: string): React.ReactNode {
   if (!text || !query) return text
-  const { tokenMap, regex } = buildTokenMap(query, paletteId, monoHex)
+  const { tokenMap, regex, synRules } = buildTokenMap(query, paletteId, monoHex)
   if (!regex || tokenMap.size === 0) return text
   const parts = text.split(regex)
   if (parts.length === 1) return text
 
-  return parts.map((part, idx) => {
-    if (!part) return null
+  // Сегменты: совпадение (с цветом) либо обычный текст.
+  // Синонимы смыслового режима маппятся на цвет исходного токена.
+  const segs: { text: string; info: TokenInfo | null }[] = []
+  for (const part of parts) {
+    if (!part) continue
     // normalize ё→е for map lookup (query normalized, but text may have ё)
     const key = part.toLowerCase().replace(/ё/g, 'е')
-    const info = tokenMap.get(key)
-    if (info) {
-      const c = info.color
-      // Support custom hex colors via inline style if palette uses hex notation
-      const useHex = c.bg.startsWith('bg-[#')
-      if (useHex) {
-        const hex = c.bg.slice(4, -1) // extract #...
-        const textIsWhite = c.text === 'text-white'
-        const borderHex = c.border.startsWith('border-[#') ? c.border.slice(8, -1) : hex
-        return (
-          <mark
-            key={idx}
-            className={`px-0.5 rounded font-medium ${textIsWhite ? 'text-white' : c.text} border`}
-            style={{ backgroundColor: hex, borderColor: borderHex }}
-          >
-            {part}
-          </mark>
-        )
-      }
+    const info = tokenMap.get(key) ?? synRules.find((r) => r.re.test(part))?.info ?? null
+    segs.push({ text: part, info })
+  }
+  if (!segs.some((s) => s.info)) return text
+
+  // Стык между двумя совпадениями, который можно склеить в одну заливку:
+  // короткий разделитель (пробел/пунктуация до 3 символов), без слов между ними.
+  const isJoiner = (s: string) => /^[\s.,;:!?«»""''()\-–—]{1,3}$/.test(s)
+
+  const renderMark = (joined: string, c: PaletteColor, key: string | number): React.ReactNode => {
+    const useHex = c.bg.startsWith('bg-[#')
+    if (useHex) {
+      const hex = c.bg.slice(4, -1) // extract #...
+      const dark = c.text === 'text-white'
       return (
-        <mark key={idx} className={`px-0.5 rounded font-medium border ${c.bg} ${c.text} ${c.border}`}>
-          {part}
+        <mark
+          key={key}
+          className="px-1 rounded-md font-semibold"
+          style={{ backgroundColor: hex, color: dark ? '#fff' : '#1e293b' }}
+        >
+          {joined}
         </mark>
       )
     }
-    return <React.Fragment key={idx}>{part}</React.Fragment>
-  })
+    // Однотонная заливка без рамок: тёмный текст поверх — читаемо, стыков нет
+    return (
+      <mark key={key} className={`px-1 rounded-md font-semibold text-slate-900 ${c.bg}`}>
+        {joined}
+      </mark>
+    )
+  }
+
+  const out: React.ReactNode[] = []
+  let i = 0
+  while (i < segs.length) {
+    const cur = segs[i]
+    if (!cur.info) {
+      out.push(<React.Fragment key={`t${i}`}>{cur.text}</React.Fragment>)
+      i++
+      continue
+    }
+    // Группа: совпадение (+ разделитель + совпадение)* — один тон по первому токену
+    const chunks: string[] = [cur.text]
+    const firstColor = cur.info.color
+    let k = i + 1
+    while (
+      k + 1 < segs.length &&
+      !segs[k].info &&
+      isJoiner(segs[k].text) &&
+      segs[k + 1].info
+    ) {
+      chunks.push(segs[k].text, segs[k + 1].text)
+      k += 2
+    }
+    out.push(renderMark(chunks.join(''), firstColor, `m${i}`))
+    i = k
+  }
+  return out
 }
 
 export function HighlightLegend({ query, paletteId = 'default', monoHex }: { query: string; paletteId?: string, monoHex?: string }) {

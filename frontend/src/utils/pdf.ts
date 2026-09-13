@@ -1,36 +1,55 @@
 /**
- * Shared PDF opening utility.
- * PDF пакета раздаются статикой из /norms/ (frontend/public/norms).
+ * pdf.ts — поиск документа и резолвинг URL PDF.
+ * Приоритет: R2 через воркер (/api/norms/:file) → статика Pages (/norms/:file).
  */
-export async function openPdf(
-  docId: string,
-  page?: number | null,
-  onError?: (msg: string) => void,
-): Promise<void> {
-  if (docId.startsWith('local:')) {
-    onError?.('Локальный PDF недоступен')
-    return
-  }
+import { WORKER_BASE } from './api'
+
+export interface DocInfoLite {
+  id: string
+  number: string
+  title: string
+  pages: number
+  file: string
+}
+
+let docsCache: DocInfoLite[] | null = null
+const headCache = new Map<string, boolean>()
+
+export async function findDoc(docId: string): Promise<DocInfoLite | null> {
   try {
-    const r = await fetch('/index/docs.json')
-    const docs: Array<{ id: string; file: string; number: string }> = await r.json()
-    const doc = docs.find((d) => d.id === String(docId))
-    if (!doc?.file) {
-      onError?.(`PDF для ${doc?.number ?? docId} не найден в пакете`)
-      return
+    if (!docsCache) {
+      const r = await fetch('/index/docs.json')
+      docsCache = (await r.json()) as DocInfoLite[]
     }
-    const url = encodeURI(`/norms/${doc.file}`) + (page ? `#page=${page}` : '')
-    const win = window.open(url, '_blank')
-    if (!win) {
-      const a = document.createElement('a')
-      a.href = url
-      a.target = '_blank'
-      a.rel = 'noreferrer'
-      document.body.appendChild(a)
-      a.click()
-      a.remove()
-    }
-  } catch (e: any) {
-    onError?.(`Ошибка PDF: ${e.message || e}`)
+    return docsCache.find((d) => d.id === String(docId)) ?? null
+  } catch {
+    return null
   }
+}
+
+async function exists(url: string): Promise<boolean> {
+  const cached = headCache.get(url)
+  if (cached !== undefined) return cached
+  try {
+    const r = await fetch(url, { method: 'HEAD' })
+    headCache.set(url, r.ok)
+    return r.ok
+  } catch {
+    headCache.set(url, false)
+    return false
+  }
+}
+
+/** Статика Pages сначала (бесплатно, без расхода кредитов воркера); R2 через воркер — только фолбэк. */
+export async function resolvePdfUrl(file: string): Promise<string> {
+  if (!/\.pdf$/i.test(file)) {
+    throw new Error(`«${file}» — не PDF, доступен только текст в поиске`)
+  }
+  const enc = encodeURIComponent(file)
+  const staticUrl = encodeURI(`/norms/${file}`)
+  if (await exists(staticUrl)) return staticUrl
+  if (WORKER_BASE && (await exists(`${WORKER_BASE}/api/norms/${enc}`))) {
+    return `${WORKER_BASE}/api/norms/${enc}`
+  }
+  throw new Error(`PDF «${file}» не найден ни в облаке, ни в пакете`)
 }

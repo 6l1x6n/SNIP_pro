@@ -42,6 +42,7 @@ export interface Env {
   // Ключ: https://opencode.ai/auth (нужен биллинг-аккаунт даже для free).
   OPENCODE_API_KEY?: string;
   ZEN_MODEL?: string; // дефолт mimo-v2.5-free
+  EVAL_TOKEN?: string; // секрет для /api/eval/* (офлайн-замеры; без него эндпоинты 404)
 }
 
 // ---------- Каталог биллинга (цены в тенге, демо-активация без денег) ----------
@@ -124,16 +125,25 @@ async function signJwt(payload: Record<string, unknown>, secret: string, ttlSec 
 }
 
 async function verifyJwt(token: string, secret: string): Promise<Record<string, unknown> | null> {
+  const r = await verifyJwtWithReason(token, secret);
+  return r.payload;
+}
+
+/** Проверка JWT с причиной отказа — чтобы фронт различал expired vs invalid и не ронял сессию зря. */
+async function verifyJwtWithReason(
+  token: string,
+  secret: string
+): Promise<{ payload: Record<string, unknown> | null; reason: "expired" | "invalid" | null }> {
   const parts = token.split(".");
-  if (parts.length !== 3) return null;
+  if (parts.length !== 3) return { payload: null, reason: "invalid" };
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
   const sig = b64urlDecode(parts[2]);
   const sigBuf = new Uint8Array(sig.length).map((_, i) => sig.charCodeAt(i));
   const ok = await crypto.subtle.verify("HMAC", key, sigBuf, new TextEncoder().encode(`${parts[0]}.${parts[1]}`));
-  if (!ok) return null;
+  if (!ok) return { payload: null, reason: "invalid" };
   const payload = JSON.parse(b64urlDecode(parts[1]));
-  if (payload.exp < Date.now() / 1000) return null;
-  return payload;
+  if (payload.exp < Date.now() / 1000) return { payload: null, reason: "expired" };
+  return { payload, reason: null };
 }
 
 // ---------- Индекс (вектора+чанки кэшируются в изоляте) ----------
@@ -204,9 +214,916 @@ function loadIndex(env: Env): Promise<CachedIndex> {
   return indexCache;
 }
 
+// ---------- Карточки значений (values.json, офлайн-экстракт; ответы 0⚡ без LLM) ----------
+
+interface ValueFact {
+  i: number; d: number; p: string; pg: number | null;
+  k: string; op: ">=" | "<=" | ">" | "<" | "=" | "range";
+  v: number | null; hi?: number; u: string; raw: string; s: string;
+  cls?: string; scope?: string; nolimit?: boolean;
+}
+interface ValueDoc { id: string; number: string; title: string; status: string }
+
+let valuesCache: { facts: ValueFact[]; docs: ValueDoc[]; at: number } | null = null;
+const VALUES_TTL_MS = 3600_000;
+
+async function loadValues(env: Env): Promise<{ facts: ValueFact[]; docs: ValueDoc[] } | null> {
+  const now = Date.now();
+  if (valuesCache && now - valuesCache.at < VALUES_TTL_MS) return valuesCache;
+  try {
+    const base = env.INDEX_BASE_URL.replace(/\/$/, "");
+    const [vr, dr] = await Promise.all([
+      fetch(`${base}/values.json`, { cache: "no-store" }),
+      fetch(`${base}/docs.json`, { cache: "no-store" }),
+    ]);
+    if (!vr.ok) return null;
+    const vj: any = await vr.json();
+    const facts: ValueFact[] = Array.isArray(vj?.facts) ? vj.facts : [];
+    let docs: ValueDoc[] = [];
+    try { docs = dr.ok ? (await dr.json() as ValueDoc[]) : []; } catch { docs = []; }
+    if (!facts.length) return null;
+    valuesCache = { facts, docs, at: now };
+    return valuesCache;
+  } catch {
+    return null;
+  }
+}
+
+const V_INTERROGATIVE = new Set(
+  ("какая какой какое какие каков какова каково каковы какому какую каких сколько " +
+   "минимальная минимальный минимальное минимальных минимально минимум " +
+   "максимальная максимальный максимальное максимальных максимально максимум " +
+   "наименьшая наименьший наименьшее наибольшая наибольший наибольшее " +
+   "допустимая допустимый допустимое допустимо допускается " +
+   "норма нормы норматив требования требование должен должна должно должны положено " +
+   "равен равна равно").split(" ")
+);
+
+/** Минимальный русский стеммер: один суффикс (как в build_index.py). */
+const V_SUFFIXES = ["ование", "ование", "ение", "ами", "ями", "ого", "его", "ому", "ему", "ыми", "ими",
+  "ых", "их",
+  "ая", "ое", "ые", "ий", "ый", "ой", "ей", "ом", "ем", "ах", "ях", "ую", "юю",
+  "ее", "ии", "ия", "ие", "ов", "ев", "ь", "а", "я", "о", "е", "у", "ю", "ы", "и", "й"];
+function vStem(w: string): string {
+  if (/^\d+$/.test(w) || w.length < 3) return w;
+  for (const suf of V_SUFFIXES) {
+    if (w.endsWith(suf) && w.length - suf.length >= 3) return w.slice(0, -suf.length);
+  }
+  return w;
+}
+function vNormWords(q: string): string[] {
+  return q.toLowerCase().replace(/ё/g, "е").replace(/[^a-zа-я0-9\s-]/g, " ").split(/\s+/).filter(Boolean);
+}
+function vFuzzyEqual(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (a.length >= 4 && b.length >= 4 && (a.startsWith(b) || b.startsWith(a))) return true;
+  if (a.length >= 5 && b.length >= 5 && a.slice(0, 5) === b.slice(0, 5)) return true;
+  return false;
+}
+function vToksFuzzyHit(queryToks: Set<string>, factToks: Set<string>): boolean {
+  for (const ft of factToks) for (const qt of queryToks) if (vFuzzyEqual(qt, ft)) return true;
+  return false;
+}
+function vPrefixHit(words: string[], stems: Set<string>): boolean {
+  for (const w of words) {
+    if (w.length < 4) continue;
+    for (const st of stems) {
+      if (st.length >= 3 && vFuzzyEqual(w, st)) return true;
+      if (st.length >= 3 && w.length >= 4) {
+        const sw = w.slice(0, Math.min(w.length, 7));
+        if (st.startsWith(sw) || sw.startsWith(st)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** Алиасы типов зданий: стем слова вопроса → стемы в названиях документов. */
+const V_DOCTYPE_ALIASES: Record<string, string[]> = {
+  жил: ["жил", "многоквартирн", "социальн"],
+  квартир: ["квартир", "жил", "многоквартирн"],
+  многоквартирн: ["многоквартирн", "жил"],
+  социальн: ["социальн", "жил"],
+  школ: ["общеобразовательн", "школьн"],
+  больниц: ["лечебн", "медицинск", "больничн", "поликлиник", "стационар"],
+  детск: ["дошкольн"],
+  дошкольн: ["дошкольн"],
+  сад: ["дошкольн", "детск"],
+  детсад: ["дошкольн"],
+  ясли: ["дошкольн"],
+  дошкольных: ["дошкольн"],
+  детских: ["дошкольн", "детск"],
+  торгов: ["торгов", "розничн", "магазин"],
+  магазин: ["торгов", "розничн"],
+  офис: ["административн", "офис"],
+  гостиниц: ["гостиниц"],
+  бан: ["банн"],
+  бассейн: ["бассейн", "плавательн"],
+  спортивн: ["спортивн", "физкультурн"],
+  театр: ["зрелищн", "культурн"],
+  кино: ["зрелищн", "культурн"],
+  кафе: ["питан", "обществен"],
+  ресторан: ["питан"],
+  стоян: ["стоян", "парков"],
+  паркин: ["стоян", "парков"],
+};
+
+function vExtractNums(query: string): number[] {
+  const out: number[] = [];
+  const re = /[+-]?\d+(?:[.,]\d+)?/g;
+  const s = query.toLowerCase().replace(/ё/g, "е");
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s)) !== null) {
+    const v = Number(m[0].replace(",", "."));
+    if (Number.isFinite(v)) out.push(v);
+  }
+  return out;
+}
+
+function vInferUnits(qNorm: string): Set<string> {
+  const u = new Set<string>();
+  if (/(этаж|этажност)/.test(qNorm)) u.add("эт");
+  if (/(площад|м2|м²|кв\.?\s*м)/.test(qNorm)) u.add("м²");
+  if (/(высот|ширин|длин|глубин|толщин|расстоян)/.test(qNorm)) u.add("м");
+  if (/(детей|дети|человек|людей|чел)/.test(qNorm)) u.add("чел");
+  if (/(мм)/.test(qNorm)) u.add("мм");
+  return u;
+}
+
+function vNumScore(f: ValueFact, qNums: number[], qUnits: Set<string>): number {
+  if (!qNums.length || f.v === null || f.v === undefined) return 0;
+  if (qUnits.size > 0 && !qUnits.has(f.u)) return 0;
+  const q = qNums[0];
+  const v = f.v;
+  const hi = f.hi ?? v;
+  switch (f.op) {
+    case "range":
+      if (q >= v && q <= hi) return 4 + 2 / (1 + (hi - v));
+      return Math.max(-3, -Math.min(Math.abs(q - v), Math.abs(q - hi)) / 2);
+    case "<=":
+      if (q <= v) return 2 + 1 / (1 + (v - q));
+      return -2;
+    case ">=":
+      if (q >= v) return 2 + 1 / (1 + (q - v));
+      return -2;
+    case "=":
+      if (Math.abs(q - v) < 1e-9) return 4;
+      return Math.max(-3, -Math.abs(q - v) / 2);
+    case ">":
+      if (q > v) return 2 + 1 / (1 + (q - v));
+      return -2;
+    case "<":
+      if (q < v) return 2 + 1 / (1 + (v - q));
+      return -2;
+    default:
+      return 0;
+  }
+}
+
+const V_SUBJECT_ALIASES: Record<string, string[]> = {
+  "потолок": ["потолк", "потолоч", "перекрыт"],
+  "квартира": ["квартир", "внутриквартирн"],
+  "помещение": ["помещен", "комнат", "квартир"],
+  "этаж": ["этаж", "этажн"],
+  "коридор": ["коридор", "холл"],
+  "мгн": ["маломобильн", "инвалид", "коляс", "кресл", "посетител"],
+  "проход": ["проход", "коридор", "проезд"],
+  "путь эвакуации": ["эвакуацион"],
+  "эвакуационный выход": ["эвакуацион"],
+};
+
+/**
+ * Permission-вопрос («можно ли», «разрешено ли», ...) vs фактоид
+ * («минимальная ширина...?», «сколько...?», «какая...?»).
+ * Да/Нет-вердикт и hero-акцент на Да/Нет разрешены ТОЛЬКО для permission.
+ */
+export function isPermissionQuestion(query: string): boolean {
+  const qN = String(query ?? "").toLowerCase().replace(/ё/g, "е");
+  if (!qN.trim()) return false;
+  return /(разреш|можно|допуск|запрещ|открыть|разместить|предусматр|вправе|нельзя|запрет)/.test(qN);
+}
+
+/**
+ * Срезает ложный префикс «Да — ...» / «Нет — ...» с фактоид-ответа.
+ * Применяется только когда вопрос НЕ permission, а LLM все равно начал с Да/Нет.
+ */
+export function stripLeadingYesNo(answerText: string): string {
+  const s = String(answerText ?? "");
+  const m = s.match(/^\s*(Да|Нет)\s*[—–\-:.,]?\s*/);
+  if (!m) return s;
+  const rest = s.slice(m[0].length).trim();
+  // Не оставляем пустой ответ: если после Да/Нет ничего нет — возвращаем как есть
+  return rest ? rest : s;
+}
+
+const V_IRRELEVANT = [
+  "лифт", "подъем", "подьем", "проезд", "арк", "эвакуац",
+  "огражд", "лестнич", "марш", "клетк", "балкон", "лоджи",
+  "архив", "гостиниц", "кухн", "сейсм", "торгов", "магазин",
+  "школ", "больниц", "спортивн", "бассейн", "театр", "офис",
+  "стоян", "парков", "банн", "питан", "ресторан", "кафе",
+];
+
+function vEscRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Стем по левой границе слова: «школ» ловит «школы», но не «дошкольные». */
+function vStemIn(st: string, text: string): boolean {
+  try {
+    return new RegExp(`(^|[^а-яa-z0-9])${vEscRe(st)}`).test(text);
+  } catch {
+    return text.includes(st);
+  }
+}
+
+function vIrrelevant(qNorm: string, sNorm: string, docText = ""): number {
+  let p = 0;
+  const hay = `${sNorm} ${docText}`;
+  for (const st of V_IRRELEVANT) {
+    if (vStemIn(st, hay) && !vStemIn(st, qNorm)) {
+      p += 2;
+      if (p >= 4) break;
+    }
+  }
+  // Явный тип объекта в запросе, а док чужой → сильный штраф.
+  const intent: Array<[string, string[]]> = [];
+  for (const qs of Object.keys(V_DOCTYPE_ALIASES)) {
+    if (qs.length >= 3 && qNorm.includes(qs)) intent.push([qs, V_DOCTYPE_ALIASES[qs]]);
+  }
+  if (intent.length > 0) {
+    const match = intent.some(([, kws]) => kws.some((kw) => docText.includes(kw)));
+    if (!match) p += 3;
+  }
+  return Math.min(p, 7);
+}
+
+function vDocBoost(qNorm: string, docText: string): number {
+  const asks = qNorm.includes("детск") || qNorm.includes("сад") || qNorm.includes("дошкольн") || qNorm.includes("одво") || qNorm.includes("ясли");
+  if (asks && (docText.includes("дошкольн") || docText.includes("детск") || docText.includes("одво"))) return 2;
+  return 0;
+}
+
+function vBoost(qNorm: string, sNorm: string): number {
+  let b = 0;
+  const asksCeiling = qNorm.includes("потол") || qNorm.includes("высот") || qNorm.includes("этаж");
+  if (asksCeiling && sNorm.includes("от пола до")) b += 2;
+  if (asksCeiling && (sNorm.includes("низа потол") || sNorm.includes("низ потол"))) b += 1;
+  if ((qNorm.includes("жил") || qNorm.includes("квартир")) && (sNorm.includes("жил") || sNorm.includes("квартир") || sNorm.includes("внутриквартирн"))) b += 1;
+  const asksK = qNorm.includes("детск") || qNorm.includes("сад") || qNorm.includes("дошкольн") || qNorm.includes("одво") || qNorm.includes("ясли");
+  if (asksK && (sNorm.includes("детск") || sNorm.includes("дошкольн") || sNorm.includes("одво") || sNorm.includes("семейн") || sNorm.includes("группов"))) b += 2;
+  // МГН-специфика: вопрос про маломобильных — факты про МГН/коляски выше generic «проход 1,2»
+  const asksMgn = qNorm.includes("маломобильн") || qNorm.includes("мгн") || qNorm.includes("инвалид") || qNorm.includes("коляс") || qNorm.includes("кресл");
+  if (asksMgn && (sNorm.includes("маломобильн") || sNorm.includes("кресл") || sNorm.includes("коляс") || sNorm.includes("инвалид"))) b += 4;
+  return b;
+}
+
+/** Штраф generic-факту, когда вопрос явно про МГН, а сниппет — общий проход/коридор без МГН-маркера. */
+function vMgnPenalty(qNorm: string, sNorm: string, factKey: string): number {
+  const asksMgn = qNorm.includes("маломобильн") || qNorm.includes("мгн") || qNorm.includes("инвалид") || qNorm.includes("коляс") || qNorm.includes("кресл");
+  if (!asksMgn) return 0;
+  const k = String(factKey ?? "").toLowerCase();
+  if (k.includes("мгн")) return 0;
+  if (sNorm.includes("маломобильн") || sNorm.includes("кресл") || sNorm.includes("коляс") || sNorm.includes("инвалид")) return 0;
+  return 3;
+}
+
+const V_DEIXIS_RE = /(перед ними|для них|в них|в этих|в указанных|этих помещен)/;
+
+/**
+ * Частный случай (scope/cls) или дейксис в сниппете, не упомянутый в запросе, —
+ * мягкий штраф: общая норма должна выигрывать у «для семей с инвалидами»,
+ * «при освещении…», «коридоров перед ними» (герой честнее, values-ответ чаще без LLM).
+ */
+function vScopePenalty(qNorm: string, f: ValueFact): number {
+  let p = 0;
+  const scope = String((f as any).scope || (f as any).cls || "").toLowerCase().replace(/ё/g, "е").trim();
+  if (scope) {
+    const keyToks = new Set(String(f.k || "").toLowerCase().split(/[^a-zа-я0-9]+/).filter(Boolean).map(vStem));
+    const extra = scope.split(/[^a-zа-я0-9]+/).filter((w) => w.length >= 4).map(vStem).filter((w) => !keyToks.has(w));
+    if (extra.length && !extra.some((w) => qNorm.includes(w.slice(0, Math.max(4, w.length - 2))))) p += 1;
+  }
+  const s = String(f.s || "").toLowerCase().replace(/ё/g, "е");
+  if (V_DEIXIS_RE.test(s) && !V_DEIXIS_RE.test(qNorm)) p += 1;
+  return p;
+}
+
+export interface ValueCardHit {
+  fact: ValueFact;
+  docNumber: string;
+  docTitle: string;
+}
+
+/** Подбор карточек под фактоид-запрос (зеркало frontend/src/search/values.ts, 0⚡). */
+export function findValueCardsLocal(query: string, facts: ValueFact[], docs: ValueDoc[], limit = 6): ValueCardHit[] {
+  const scored = findValueCardsScored(query, facts, docs, limit);
+  return scored.map((s) => s.hit);
+}
+
+/** Скоринг с метаданными для строгого гейта tryValuesAnswer (docHit/paramOrig/num/rel). */
+export function findValueCardsScored(query: string, facts: ValueFact[], docs: ValueDoc[], limit = 6): Array<{ hit: ValueCardHit; rel: number; ord: number; docHit: boolean; paramOrig: boolean; num: number }> {
+  const words = vNormWords(query);
+  if (!words.length) return [];
+  const interrogative = words.some((w) => V_INTERROGATIVE.has(w));
+  const qtoks = new Set(words.map(vStem));
+  const qstr = words.join(" ");
+  const qNorm = qstr.toLowerCase().replace(/ё/g, "е");
+  const minHint = /(миним|наименьш|наименьш|не менее|минимум)/.test(qNorm);
+  const maxHint = /(максим|наибольш|наименьш|не более|максимум)/.test(qNorm) && !minHint;
+  const ordMap: Record<string, number> = maxHint
+    ? { "<=": 0, ">=": 1, range: 2, "<": 3, ">": 4, "=": 5 }
+    : { ">=": 0, "<=": 1, range: 2, ">": 3, "<": 4, "=": 5 };
+  const qNums = vExtractNums(query);
+  const qUnits = vInferUnits(qNorm);
+  const scored: Array<{ hit: ValueCardHit; rel: number; ord: number; docHit: boolean; paramOrig: boolean; num: number }> = [];
+  for (const f of facts) {
+    const [param = "", subj = ""] = String(f.k || "").split(":");
+    const paramToks = new Set(param.split(" ").map(vStem));
+    const subjToks = new Set(subj ? subj.split(" ").map(vStem) : []);
+    let paramHit = false;
+    for (const t of paramToks) if (qtoks.has(t)) { paramHit = true; break; }
+    if (!paramHit && vToksFuzzyHit(qtoks, paramToks)) paramHit = true;
+    if (!paramHit && vPrefixHit(words, paramToks)) paramHit = true;
+    if (!paramHit) continue;
+    let subjHit = false;
+    let subjStrong = false;
+    if (subjToks.size) {
+      for (const t of subjToks) if (qtoks.has(t)) { subjHit = true; subjStrong = true; break; }
+      if (!subjHit && vToksFuzzyHit(qtoks, subjToks)) { subjHit = true; subjStrong = true; }
+      if (!subjHit && vPrefixHit(words, subjToks)) { subjHit = true; subjStrong = true; }
+      if (!subjHit) {
+        // case-insensitive: ключ «МГН» vs «мгн»
+        const al = V_SUBJECT_ALIASES[subj.toLowerCase()] ?? V_SUBJECT_ALIASES[subj] ?? [];
+        if (al.some((a) => qstr.includes(a))) { subjHit = true; subjStrong = true; }
+      }
+      // обратное направление: запрос «МГН», а субъект факта — «проход/коридор» с МГН-сниппетом
+      if (!subjHit) {
+        const asksMgn = qNorm.includes("мгн") || qNorm.includes("маломобильн") || qNorm.includes("инвалид") || qNorm.includes("коляс") || qNorm.includes("кресл");
+        if (asksMgn) {
+          const sLow = String(f.s || "").toLowerCase();
+          if (sLow.includes("маломобильн") || sLow.includes("кресл") || sLow.includes("коляс") || sLow.includes("инвалид")) {
+            subjHit = true; subjStrong = true;
+          }
+        }
+      }
+    }
+    if (!subjHit && !interrogative) continue;
+    if (!subjToks.size && !interrogative) continue;
+    const doc = docs[f.d];
+    // Буст по типу здания: стемы слов вопроса в названии документа
+    // («…в квартире» → жилые многоквартирные первыми) + алиасы синонимов.
+    // includes + fuzzy по токенам дока: «дошкольных» ловит «дошкольные».
+    const docText = `${doc?.number ?? ""} ${doc?.title ?? ""}`.toLowerCase().replace(/ё/g, "е");
+    const docToks = new Set(docText.split(/[^a-zа-я0-9]+/).filter(Boolean).map(vStem));
+    const docHit = [...qtoks].some((st) => {
+      if (st.length < 3) return false;
+      if (docText.includes(st)) return true;
+      const al = V_DOCTYPE_ALIASES[st];
+      if (al && al.some((a) => docText.includes(a))) return true;
+      for (const dt of docToks) if (vFuzzyEqual(st, dt)) return true;
+      return false;
+    });
+    const sNorm = String(f.s || "").toLowerCase().replace(/ё/g, "е");
+    let overlap = 0;
+    for (const t of qtoks) {
+      if (t.length >= 3 && sNorm.includes(t)) {
+        overlap++;
+        if (overlap >= 5) break;
+      }
+    }
+    const boost = vBoost(qNorm, sNorm) + vDocBoost(qNorm, docText);
+    const penalty = vIrrelevant(qNorm, sNorm, docText) + vMgnPenalty(qNorm, sNorm, String(f.k || "")) + vScopePenalty(qNorm, f);
+    const num = vNumScore(f, qNums, qUnits);
+    const rel = (subjHit ? (subjStrong ? 3 : 1) : 0) + (paramHit ? 1 : 0) + (docHit ? 2 : 0) + overlap + boost + num - penalty;
+    scored.push({ hit: { fact: f, docNumber: doc?.number ?? "", docTitle: doc?.title ?? "" }, rel, ord: ordMap[f.op] ?? 9, docHit, paramOrig: paramHit, num });
+  }
+  scored.sort((a, b) => b.rel - a.rel || a.ord - b.ord || a.hit.fact.i - b.hit.fact.i);
+  const seen = new Set<string>();
+  const out: Array<{ hit: ValueCardHit; rel: number; ord: number; docHit: boolean; paramOrig: boolean; num: number }> = [];
+  for (const s of scored) {
+    const key = `${s.hit.fact.k}|${s.hit.fact.op}|${s.hit.fact.v}|${s.hit.fact.u}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(s);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function formatValueRu(f: ValueFact): string {
+  const num = (v: number | null) => (v === null || v === undefined ? "" : String(v).replace(".", ","));
+  if (f.op === "range") return `${num(f.v)}–${num(f.hi ?? null)} ${f.u}`.trim();
+  if (f.v === null) return f.raw;
+  // "=" — явно ровно: «= 2,7 м» отличается от границы «≥ 2,5 м» (раньше было голое «2,7 м»)
+  const sym = f.op === ">=" ? "≥ " : f.op === "<=" ? "≤ " : f.op === ">" ? "> " : f.op === "<" ? "< " : f.op === "=" ? "= " : "";
+  return `${sym}${num(f.v)} ${f.u}`.trim();
+}
+function formatLabelRu(k: string): string {
+  const [param = "", subj = ""] = String(k || "").split(":");
+  const cap = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
+  return subj ? `${cap(param)} · ${subj}` : cap(param);
+}
+
+/** Число из факта дословно есть в сниппете (с учётом десятичной запятой и минуса)? */
+function valueGrounded(f: ValueFact): boolean {
+  const s = String(f.s || "").toLowerCase().replace(/ё/g, "е").replace(/−/g, "-");
+  const comma = (v: number) => String(v).replace(".", ",");
+  if (f.op === "range") {
+    return typeof f.v === "number" && s.includes(comma(f.v));
+  }
+  if (f.v === null) return s.includes(f.raw.toLowerCase());
+  const tok = f.raw.split(" ")[0] || comma(f.v);
+  return s.includes(tok.toLowerCase()) || s.includes(comma(f.v)) || s.includes(String(f.v));
+}
+
+/* ---------- Универсальный gate «вердикт vs числа» (детерминированный, 0⚡) ---------- */
+
+const V_CARDINAL_WORDS: Record<string, number> = {
+  "один": 1, "одна": 1, "одно": 1, "одного": 1, "одной": 1, "одному": 1, "одним": 1,
+  "два": 2, "две": 2, "двух": 2, "двум": 2, "двумя": 2,
+  "три": 3, "трех": 3, "трем": 3, "тремя": 3,
+  "четыре": 4, "четырех": 4,
+  "пять": 5, "пяти": 5, "пятью": 5,
+  "шесть": 6, "шести": 6, "шестью": 6,
+  "семь": 7, "семи": 7, "семью": 7,
+  "восемь": 8, "восьми": 8, "восемью": 8,
+  "девять": 9, "девяти": 9, "девятью": 9,
+  "десять": 10, "десяти": 10, "десятью": 10,
+  "одиннадцать": 11, "двенадцать": 12, "тринадцать": 13, "четырнадцать": 14,
+  "пятнадцать": 15, "шестнадцать": 16, "семнадцать": 17, "восемнадцать": 18,
+  "девятнадцать": 19, "двадцать": 20,
+};
+
+const V_ORDINAL_STEMS: Record<string, number> = {
+  "перв": 1, "втор": 2, "трет": 3, "четверт": 4, "пят": 5,
+  "шест": 6, "седьм": 7, "восьм": 8, "девят": 9, "десят": 10,
+  "одиннадцат": 11, "двенадцат": 12, "тринадцат": 13,
+  "четырнадцат": 14, "пятнадцат": 15, "шестнадцат": 16,
+  "семнадцат": 17, "восемнадцат": 18, "девятнадцат": 19,
+  "двадцат": 20,
+};
+
+/** Все числа запроса: цифры + числительные словами («на 7 этаже», «на седьмом этаже»). */
+export function vQueryNumbersFull(query: string): number[] {
+  const out: number[] = [];
+  const seen = new Set<string>();
+  const push = (v: number) => {
+    const k = `n${v}`;
+    if (!seen.has(k)) { seen.add(k); out.push(v); }
+  };
+  const s = String(query ?? "").toLowerCase().replace(/ё/g, "е");
+  const re = /[+-]?\d+(?:[.,]\d+)?/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s)) !== null) {
+    const v = Number(m[0].replace(",", "."));
+    if (Number.isFinite(v)) push(v);
+  }
+  for (const raw of s.match(/[а-яa-z0-9]+/g) ?? []) {
+    const c = V_CARDINAL_WORDS[raw];
+    if (c !== undefined) { push(c); continue; }
+    const o = V_ORDINAL_STEMS[vStem(raw)];
+    if (o !== undefined) push(o);
+  }
+  return out;
+}
+
+interface VTextLimit { op: "<=" | ">=" | ">" | "<"; v: number; u: string; span: string }
+
+/** Лимиты вида «не выше пятого этажа / не более 9 м / до 5 детей» из текста.
+ * Единицы — любые (эт/м/м²/мм/см/чел); «средневзвешенная этажность застройки»
+ * лимитом размещения НЕ является — такие окна пропускаем. */
+const V_LIMIT_RE =
+  /(не выше|не более|не больше|не превыша[а-я]*|не должн[а-я]*\s+превыша[а-я]*|не ниже|не менее|не меньше|более|больше|свыше|выше|менее|меньше|ниже|минимум|максимум|до|от)\s+(\d+(?:[.,]\d+)?|[а-я]+)\s*(эт\.|этаж[а-я]*|м²|м2|кв\.?\s*м(?:²|2)?|миллиметр[а-я]*|мм|сантиметр[а-я]*|см|метр[а-я]*|(?<![а-яa-z0-9])м(?![а-яa-z0-9²2])|дет[а-я]*|детей|ребен[а-я]*|человек[а-я]*|люд[а-я]*)/gi;
+
+export function vLimitOp(w: string): VTextLimit["op"] | "" {
+  // m[1] — ровно одна ветка альтернации; якоря обязательны («не менее» содержит «менее»).
+  const t = w.toLowerCase().trim();
+  if (/^(не ниже|не менее|не меньше|минимум|от)$/.test(t)) return ">=";
+  if (/^(не выше|не более|не больше|максимум|до|ниже|менее|меньше)$/.test(t)) return "<=";
+  if (/превыша/.test(t)) return "<=";
+  if (/^(более|больше|свыше|выше)$/.test(t)) return ">";
+  return "";
+}
+
+export function vLimitUnit(w: string): string {
+  const t = w.toLowerCase().replace(/\s+/g, "");
+  if (/^эт/.test(t)) return "эт";
+  if (/м²|м2|^кв/.test(t)) return "м²";
+  if (/^мм|^миллиметр/.test(t)) return "мм";
+  if (/^см|^сантиметр/.test(t)) return "см";
+  if (/^метр|^м$/.test(t)) return "м";
+  if (/^дет|^ребен|^человек|^люд/.test(t)) return "чел";
+  return "";
+}
+
+export function vWordNum(w: string): number | undefined {
+  const c = V_CARDINAL_WORDS[w];
+  if (c !== undefined) return c;
+  return V_ORDINAL_STEMS[vStem(w)];
+}
+
+export function vFindLimits(text: string): VTextLimit[] {
+  const out: VTextLimit[] = [];
+  const s = String(text ?? "").toLowerCase().replace(/ё/g, "е");
+  V_LIMIT_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  const UNIT = String.raw`(?:эт\.|этаж[а-я]*|м²|м2|кв\.?\s*м(?:²|2)?|миллиметр[а-я]*|мм|сантиметр[а-я]*|см|метр[а-я]*|(?<![а-яa-z0-9])м(?![а-яa-z0-9²2])|дет[а-я]*|детей|ребен[а-я]*|человек[а-я]*|люд[а-я]*)`;
+  while ((m = V_LIMIT_RE.exec(s)) !== null) {
+    const start = m.index;
+    // «средневзвешенная этажность застройки 5 и более» — характеристика района, не лимит
+    if (/средневзвешен/.test(s.slice(Math.max(0, start - 60), start))) continue;
+    const op = vLimitOp(m[1]);
+    if (!op) continue;
+    const numRaw = m[2];
+    const v = /^\d/.test(numRaw) ? Number(numRaw.replace(",", ".")) : vWordNum(numRaw);
+    if (v === undefined || !Number.isFinite(v)) continue;
+    const u = vLimitUnit(m[3] || "");
+    if (!u) continue;
+    out.push({ op, v, u, span: m[0].slice(0, 80) });
+  }
+  // Постфикс: «высотой 10 м и более», «температура не ниже −5 °C» уже покрыта выше;
+  // здесь только «число + единица + и более/менее».
+  const postRe = new RegExp(String.raw`(\d+(?:[.,]\d+)?)\s*(${UNIT})\s+(и\s+более|и\s+выше|или\s+более|и\s+менее|и\s+ниже|или\s+менее)` , "gi");
+  while ((m = postRe.exec(s)) !== null) {
+    const more = /более|выше/.test(m[3]);
+    const v = Number(m[1].replace(",", "."));
+    if (!Number.isFinite(v)) continue;
+    const u = vLimitUnit(m[2] || "");
+    if (!u) continue;
+    out.push({ op: more ? ">=" : "<=", v, u, span: m[0].slice(0, 80) });
+  }
+  return out;
+}
+
+export function vViolates(n: number, op: string, v: number, hi?: number): boolean {
+  switch (op) {
+    case "<=": return n > v;
+    case ">=": return n < v;
+    case ">": return n <= v;
+    case "<": return n >= v;
+    case "=": return Math.abs(n - v) > 1e-9;
+    case "range": return hi === undefined ? false : n < v || n > hi;
+    default: return false;
+  }
+}
+
+/** DocHit для текстового чанка: намерение запроса vs название документа (как в скоринге). */
+export function vTextDocHit(qN: string, docTitle: string): boolean {
+  const dt = `${docTitle ?? ""}`.toLowerCase().replace(/ё/g, "е");
+  if (!dt.trim()) return false;
+  const toks = new Set(qN.split(/[^a-zа-я0-9]+/).filter(Boolean).map(vStem));
+  for (const st of toks) {
+    if (st.length < 3) continue;
+    if (dt.includes(st)) return true;
+    const al = V_DOCTYPE_ALIASES[st];
+    if (al && al.some((a) => dt.includes(a))) return true;
+  }
+  return false;
+}
+
+/** Полярность вердикта ответа: да/нет/неизвестно (отказ «не найдено» — мимо gate). */
+export function vVerdictPolarity(answerText: string): "yes" | "no" | "unknown" {
+  const s = String(answerText ?? "").toLowerCase().replace(/ё/g, "е");
+  if (!s || s.includes("не найдено") || s.includes("не удалось") || s.includes("резервный режим")) return "unknown";
+  if (/(не разрешено|не разрешается|не допускается|не допуск|запрещено|запрещается|запрет|нельзя|не разрешен|не положено)/.test(s)) return "no";
+  // \b с кириллицей не дружит («нет.» — оба не-word) → границы явно
+  if (/(^|[^а-яёa-z0-9])нет([^а-яёa-z0-9]|$)/.test(s)) return "no";
+  if (/(разрешено|разрешается|допускается|можно|допустимо)/.test(s)) return "yes";
+  if (/(^|[^а-яёa-z0-9])да([^а-яёa-z0-9]|$)/.test(s)) return "yes";
+  return "unknown";
+}
+
+export function vFormatLimit(op: string, v: number, u: string): string {  const num = String(v).replace(".", ",");
+  if (u === "эт") {
+    if (op === "<=") return `не выше ${num}-го этажа`;
+    if (op === "<") return `ниже ${num}-го этажа`;
+    if (op === ">=") return `не ниже ${num}-го этажа`;
+    if (op === ">") return `выше ${num}-го этажа`;
+    return `${num}-й этаж`;
+  }
+  const un = u === "м²" ? "м²" : u === "мм" ? "мм" : u === "см" ? "см" : u === "чел" ? "чел." : "м";
+  if (op === "<=") return `не более ${num} ${un}`;
+  if (op === ">=") return `не менее ${num} ${un}`;
+  if (op === ">") return `более ${num} ${un}`;
+  if (op === "<") return `менее ${num} ${un}`;
+  return `${num} ${un}`;
+}
+
+interface VGateCite { i: number; d: number; p: string; pg: number | null; quote: string; docNumber: string; docTitle: string }
+
+/**
+ * Проверка вердикта LLM против чисел. Возвращает override-патч ответа
+ * или null (вердикт consistent / gate неприменим). Только для permission-
+ * вопросов («разрешено ли», «можно ли») — фактоиды идут мимо.
+ */
+export function vNumericGate(args: {
+  query: string; answerText: string;
+  scored: Array<{ hit: ValueCardHit; rel: number; ord: number; docHit: boolean; paramOrig: boolean; num: number }>;
+  promptContexts: string[]; rawContexts: string[]; ids: number[];
+  chunks: Array<{ d: number; p: string; pg: number; t: string }>;
+  docs: ValueDoc[];
+}): { answer: string; cite: VGateCite } | null {
+  const { query, answerText } = args;
+  const qN = query.toLowerCase().replace(/ё/g, "е");
+  if (!isPermissionQuestion(query)) return null;
+  // Запрос сам с компаративом («выше 9», «до 5») — N не точка, арифметика gate
+  // неприменима: оставляем LLM (промпт-правило 8 его страхует).
+  // NB: \b для кириллицы мёртв → границы слов явно.
+  if (/(выше|ниже|более|менее|больше|меньше|свыше|не менее|не более|(^|[^а-яёa-z0-9])(до|от)([^а-яёa-z0-9]|$))/.test(qN)) return null;
+  const polarity = vVerdictPolarity(answerText);
+  if (polarity === "unknown") return null;
+  const qNums = vQueryNumbersFull(query);
+  if (!qNums.length) return null;
+  const qUnits = vInferUnits(qN);
+
+  // Кандидаты-лимиты: (а) values-факты с совпадающей единицей, (б) лимиты из текстов.
+  const cands: Array<{ op: string; v: number; hi?: number; u: string; docHit: boolean; rel: number; cite: VGateCite }> = [];
+  for (const s of args.scored) {
+    const f = s.hit.fact;
+    if (f.v === null || f.v === undefined) continue;
+    if (f.nolimit) continue; // процедура замера — не требование, вердикт не строим
+    if (qUnits.size > 0 && !qUnits.has(f.u)) continue;
+    if (f.op !== "<=" && f.op !== ">=" && f.op !== ">" && f.op !== "<" && f.op !== "=") continue;
+    cands.push({
+      op: f.op, v: f.v, hi: f.hi, u: f.u, docHit: s.docHit, rel: s.rel,
+      cite: {
+        i: f.i, d: f.d, p: f.p || "", pg: f.pg ?? null, quote: f.s || "",
+        docNumber: s.hit.docNumber || "", docTitle: s.hit.docTitle || "",
+      },
+    });
+  }
+  args.promptContexts.forEach((ctx, k) => {
+    for (const lim of vFindLimits(ctx)) {
+      if (qUnits.size > 0 && !qUnits.has(lim.u)) continue;
+      const ch = args.chunks[args.ids[k]];
+      if (!ch) continue;
+      const doc = args.docs[ch.d];
+      const raw = args.rawContexts[k] || "";
+      const low = raw.toLowerCase().replace(/ё/g, "е");
+      let quote = raw.slice(0, 300);
+      const at = low.indexOf(lim.span.slice(0, 20).toLowerCase());
+      if (at >= 0) {
+        const s0 = Math.max(0, raw.lastIndexOf(".", at - 1) + 1);
+        let s1 = raw.indexOf(".", at + lim.span.length);
+        s1 = s1 < 0 ? raw.length : Math.min(raw.length, s1 + 1);
+        quote = raw.slice(s0, s1).trim().slice(0, 400) || quote;
+      }
+      cands.push({
+        op: lim.op, v: lim.v, u: lim.u,
+        docHit: vTextDocHit(qN, doc?.title ?? ""),
+        rel: 0,
+        cite: { i: args.ids[k], d: ch.d, p: ch.p || "", pg: ch.pg ?? null, quote, docNumber: doc?.number ?? "", docTitle: doc?.title ?? "" },
+      });
+    }
+  });
+  if (!cands.length) return null;
+
+  const candViolated = (c: (typeof cands)[number], n: number): boolean => {
+    if (c.op === "=") return vViolates(n, c.op, c.v);
+    return vViolates(n, c.op, c.v, c.hi);
+  };
+
+  if (polarity === "yes") {
+    // «Да» при нарушенном лимите СВОЕГО типа документа → override «Нет».
+    // Чужие доки (зальные >5 при вопросе про сад) не ветируют: только docHit.
+    let bad: typeof cands = [];
+    for (const n of qNums) {
+      for (const c of cands) {
+        if (c.op === "=" || !c.docHit) continue;
+        if (candViolated(c, n)) bad.push(c);
+      }
+      if (bad.length) break;
+    }
+    if (!bad.length) return null;
+    bad.sort((a, b) => b.rel - a.rel);
+    const win = bad[0];
+    const lim = vFormatLimit(win.op, win.v, win.u);
+    return {
+      answer: `⟦ИТОГ⟧Нет — не разрешено: по норме ${lim} (${win.cite.docNumber || "нормативный документ"}${win.cite.p ? `, п. ${win.cite.p}` : ""}).⟦/ИТОГ⟧`,
+      cite: win.cite,
+    };
+  }
+  // polarity === "no": override «Да» — только если есть выполненный лимит своего
+  // дока И нет нарушенного лимита своего дока. Чужие лимиты игнорируем.
+  const own = cands.filter((c) => c.docHit && c.op !== "=");
+  if (!own.some((c) => qNums.some((n) => !candViolated(c, n)))) return null;
+  for (const n of qNums) {
+    for (const c of own) {
+      if (candViolated(c, n)) return null;
+    }
+  }
+  const good = [...own].sort((a, b) => b.rel - a.rel)[0];
+  const lim = vFormatLimit(good.op, good.v, good.u);
+  return {
+    answer: `⟦ИТОГ⟧Да — разрешено: по норме ${lim} (${good.cite.docNumber || "нормативный документ"}${good.cite.p ? `, п. ${good.cite.p}` : ""}).⟦/ИТОГ⟧`,
+    cite: good.cite,
+  };
+}
+
+/**
+ * Строка-вердикт для мин/макс-вопросов («Минимальная высота…?» → «Минимум — ≥ 2,5 м»).
+ * Универсально, только заземлённые факты; вердикт — по крупнейшей когерентной
+ * группе (параметр+субъект+единица), иначе «максимум» склеился бы из забора и балкона.
+ * Пустая строка в сомнении (смешанный набор → просто пули, как раньше).
+ * Маркер ⟦ИТОГ⟧ — транспорт для hero-блока фронта (strip в cleanAnswerText).
+ */
+export function minMaxVerdict(query: string, facts: ValueFact[]): { line: string; win: ValueFact | null } {
+  const none = { line: "", win: null };
+  const qN = String(query ?? "").toLowerCase().replace(/ё/g, "е");
+  const minHint = /(миним|наименьш|минимум)/.test(qN) && !/(максим|наибольш|максимум)/.test(qN);
+  const maxHint = /(максим|наибольш|максимум)/.test(qN) && !/(миним|наименьш|минимум)/.test(qN);
+  if (!minHint && !maxHint) return none;
+  // процедуры замера — не требования: из hero-кандидатов вон (пули их покажут)
+  const nums = facts.filter((f) => typeof f.v === "number" && f.u && !(f as any).nolimit);
+  if (nums.length < 2) return none;
+  // крупнейшая группа «параметр:субъект + единица»
+  const groups = new Map<string, ValueFact[]>();
+  for (const f of nums) {
+    const k = `${f.k}|${f.u}`;
+    const arr = groups.get(k) ?? [];
+    arr.push(f);
+    groups.set(k, arr);
+  }
+  const same = [...groups.values()].sort((a, b) => b.length - a.length)[0];
+  if (!same?.length) return none;
+  // Раньше требовали ≥2 факта в группе — МГН-вопрос с одним топ-фактом оставался без
+  // вердикта и уходил в LLM, который лепил «Да —». Теперь одиночный направленный
+  // факт тоже дает «Минимум — ≥ X» (без «также»).
+  if (same.length < 2) {
+    const single = same[0];
+    if (single && typeof single.v === "number" && single.u) {
+      const okOp = minHint ? (single.op === ">=" || single.op === ">") : (single.op === "<=" || single.op === "<");
+      if (okOp) {
+        const fmt1 = (v: number) => String(Math.round(v * 1000) / 1000).replace(".", ",");
+        const sym = single.op === ">=" ? "≥" : single.op === "<=" ? "≤" : single.op === ">" ? "более" : "менее";
+        const word = minHint ? "Минимум" : "Максимум";
+        return { line: `⟦ИТОГ⟧${word} — ${sym} ${fmt1(single.v as number)} ${single.u}⟦/ИТОГ⟧`, win: single };
+      }
+    }
+    return none;
+  }
+  const u = same[0].u;
+  const fmt = (v: number) => String(Math.round(v * 1000) / 1000).replace(".", ",");
+  const hero = (s: string) => `⟦ИТОГ⟧${s}⟦/ИТОГ⟧`;
+  // число hero — ТОЛЬКО из направленных операторов (>=/> для минимума, <=/< для
+  // максимума). Голое "=" — часто частный случай (ложи 0,8 / замер 1 м / 8,5 из
+  // 25×8,5): в число не входит, только в «также» со своим знаком.
+  const symOf = (op: string): string =>
+    op === ">=" ? "≥" : op === "<=" ? "≤" : op === ">" ? "более" : op === "<" ? "менее" : "=";
+  // Частный случай: scope/cls или дейксис в сниппете («коридоров перед ними»).
+  const restrictive = (f: ValueFact): boolean => {
+    if (String((f as any).scope || (f as any).cls || "").trim()) return true;
+    return V_DEIXIS_RE.test(String(f.s || "").toLowerCase().replace(/ё/g, "е"));
+  };
+  const build = (pool: ValueFact[], word: string): { line: string; win: ValueFact | null } => {
+    if (!pool.length) return none;
+    // Hero — по общим нормам: частные случаи уходят в «в норме также» и субкарточки,
+    // не перебивая общую норму минимумом (иначе «коридор ≥1,1 м перед лифтами»).
+    const general = pool.filter((f) => !restrictive(f));
+    const heroPool = general.length ? general : pool;
+    const m = minHint ? Math.min(...heroPool.map((f) => f.v as number)) : Math.max(...heroPool.map((f) => f.v as number));
+    // победитель: точное "=" нет — среди направленных минимальный/максимальный;
+    // при равных значениях предпочитаем инклюзивный (>=/<=)
+    const tied = heroPool.filter((f) => Math.abs((f.v as number) - m) < 1e-9);
+    const win = tied.find((f) => minHint ? f.op === ">=" : f.op === "<=")
+      ?? tied.find((f) => minHint ? f.op === ">" : f.op === "<")
+      ?? tied[0];
+    const alsoOps = minHint ? [">=", ">", "="] : ["<=", "<", "="];
+    const others = [...new Set(
+      same.filter((f) => alsoOps.includes(f.op)).map((f) => f.v as number)
+        .filter((v) => Math.abs(v - m) > 1e-9)
+    )].sort((a, b) => a - b);
+    // квалификатор — по данным: эксклюзивная граница (>/<) или разные области
+    const scopes = new Set(same.map((f) => String((f as any).scope || (f as any).cls || "")).filter(Boolean));
+    const qualified = win.op === ">" || win.op === "<" || scopes.size > 1;
+    // схлопываем две скобки в одну: «(также: … — зависит от случая, …)»
+    let suffix = "";
+    if (others.length && qualified) suffix = ` (в норме также: ${others.map(fmt).join(", ")} ${u} — зависит от случая, см. ниже)`;
+    else if (others.length) suffix = ` (в норме также: ${others.map(fmt).join(", ")} ${u})`;
+    else if (qualified) suffix = ` (зависит от случая, см. ниже)`;
+    return { line: hero(`${word} — ${symOf(win.op)} ${fmt(m)} ${u}${suffix}`), win };
+  };
+  if (minHint) return build(same.filter((f) => f.op === ">=" || f.op === ">"), "Минимум");
+  return build(same.filter((f) => f.op === "<=" || f.op === "<"), "Максимум");
+}
+
+/**
+ * Бесплатный ответ из карточек (без LLM и списаний). Возвращает null,
+ * если запрос не фактоидный или заземление не сошлось (тогда — обычная цепочка,
+ * а строки карточек уйдут в LLM-промпт как проверенные значения).
+ */
+export async function tryValuesAnswer(env: Env, query: string): Promise<{
+  answer: any; sources: Array<{ i: number; d: number; p: string; pg: number | null }>; lines: string[];
+  scored: Array<{ hit: ValueCardHit; rel: number; ord: number; docHit: boolean; paramOrig: boolean; num: number }>;
+} | null> {
+  const loaded = await loadValues(env);
+  if (!loaded) return null;
+  const scored = findValueCardsScored(query, loaded.facts, loaded.docs, 12);
+  if (!scored.length) return null;
+  const cards = scored.map((s) => s.hit);
+  const shortTitle = (t: string) => (t.length > 44 ? t.slice(0, 43) + "…" : t);
+  // «п. Таблица 1» — оксюморон: таблица не пункт, префикс опускаем (и тут, и в сносках).
+  const fmtP = (p: string) => (!p ? "" : /^таблиц/i.test(p) ? p : `п. ${p}`);
+  const clsOf = (f: ValueFact) => {
+    const c = f?.cls;
+    return typeof c === "string" && c.trim() ? c.trim().slice(0, 60) : "";
+  };
+  // Область применения рядом с классом: «· III класс · для входа в ложи»
+  const scopeOf = (f: ValueFact) => {
+    const c = f?.scope;
+    return typeof c === "string" && c.trim() ? c.trim().slice(0, 60) : "";
+  };
+  const bulletRow = (c: (typeof cards)[number]) => {
+    const tags = [clsOf(c.fact), scopeOf(c.fact)].filter(Boolean).join(" · ");
+    return `• ${formatLabelRu(c.fact.k)}${tags ? ` · ${tags}` : ""} — ${formatValueRu(c.fact)}`;
+  };
+  const bullet = (c: (typeof cards)[number]) =>
+    `${bulletRow(c)} (` +
+    `${c.docNumber || "нормативный документ"}` +
+    `${c.docTitle ? `, ${shortTitle(c.docTitle)}` : ""}` +
+    `${c.fact.p ? `, ${fmtP(c.fact.p)}` : ""}${c.fact.pg != null ? `, стр. ${c.fact.pg}` : ""})`;
+  const lines = cards.slice(0, 6).map(bullet);
+  // Компактное тело ответа: пули группируются по источнику, общий источник —
+  // один раз подписью. Вместо 4× повтора документа — чистая таблица значений.
+  const compactBody = (idxs: number[]): string => {
+    const groups = new Map<string, typeof cards>();
+    for (const idx of idxs) {
+      const c = cards[idx];
+      const key = `${c.docNumber}|${c.fact.p}|${c.fact.pg}`;
+      const arr = groups.get(key) ?? [];
+      arr.push(c);
+      groups.set(key, arr);
+    }
+    return [...groups.values()]
+      .map((cs) => {
+        const c0 = cs[0];
+        const head =
+          `${c0.docNumber || "нормативный документ"}` +
+          `${c0.docTitle ? `, ${shortTitle(c0.docTitle)}` : ""}` +
+          `${c0.fact.p ? `, ${fmtP(c0.fact.p)}` : ""}${c0.fact.pg != null ? `, стр. ${c0.fact.pg}` : ""}:`;
+        return `${head}\n${cs.map(bulletRow).join("\n")}`;
+      })
+      .join("\n\n");
+  };
+  const groundedIdx = scored
+    .map((s, idx) => ({ s, idx }))
+    .filter(({ s }) => valueGrounded(s.hit.fact));
+  if (!groundedIdx.length) return { answer: null as any, sources: [], lines, scored };
+  // Строгий гейт: прямой values-ответ только при уверенности, иначе — строки в LLM.
+  // Модальность разрешения/размещения («можно ли», «на 6 этаже») требует LLM-синтеза,
+  // табличная классификация (сейсмика 6-12) не должна маскироваться под разрешение.
+  const qN = query.toLowerCase().replace(/ё/g, "е");
+  const reasoningAsk = /(разреш|можно|допуск|запрещ|открыть|разместить|предусматр|допускается|на \d+\s*этаж|сравн|отлич|разниц|что лучше|плюсы|минусы)/.test(qN);
+  // Сравнения всегда уходят в LLM (values-строки идут как valueLines) — буллеты не дают синтеза.
+  const comparativeAsk = /(сравн|отлич|разниц|что лучше|плюсы|минусы)/.test(qN);
+  if (comparativeAsk) return { answer: null as any, sources: [], lines, scored };
+  const top = groundedIdx.slice(0, 4).map(({ s }) => s);
+  const topDocs = new Set(top.map((s) => s.hit.docTitle || s.hit.docNumber));
+  const ambiguousTypes = topDocs.size >= 2;
+  const best = groundedIdx[0].s;
+  const confident = best.docHit && best.paramOrig && best.num >= 0 && best.rel >= 6;
+  if (reasoningAsk && (!confident || ambiguousTypes)) {
+    return { answer: null as any, sources: [], lines, scored };
+  }
+  if (ambiguousTypes && !confident) {
+    return { answer: null as any, sources: [], lines, scored };
+  }
+  const first = best.hit;
+  const topIdx = groundedIdx.slice(0, 4).map(({ idx }) => idx);
+  // Строка-вердикт для мин/макс-вопросов — только по видимым пулям (иначе в итог
+  // просачивается шум хвоста: «1,6 / 75 м» при вопросе про потолок квартиры).
+  const verdictFacts = topIdx.map((idx) => cards[idx].fact);
+  const verdict = minMaxVerdict(query, verdictFacts);
+  const verdictLine = verdict.line;
+  // Основание — от факта-победителя вердикта (цитата grounds именно число hero),
+  // иначе — от первой пули, как раньше.
+  const basisCard = (verdict.win
+    ? topIdx.map((idx) => cards[idx]).find((c) => c.fact === verdict.win)
+    : null) ?? first;
+  const basisFact = basisCard.fact;
+  const answer = {
+    answer: `Точные значения из норм (snippy.llm):\n\n${verdictLine ? verdictLine + "\n\n" : ""}${compactBody(topIdx)}`,
+    normative_basis: basisCard.docNumber || "",
+    paragraph: basisFact.p || "",
+    page: basisFact.pg,
+    quote: basisFact.s || "",
+    status: "active",
+    date_actual: new Date().toISOString().slice(0, 10),
+    is_grounded: true,
+    provider: "values",
+  };
+  const winSource = verdict.win
+    ? [{ i: basisFact.i, d: basisFact.d, p: basisFact.p, pg: basisFact.pg }]
+    : [];
+  const sources = [
+    ...winSource,
+    ...groundedIdx.slice(0, 4).map(({ idx }) => ({ i: cards[idx].fact.i, d: cards[idx].fact.d, p: cards[idx].fact.p, pg: cards[idx].fact.pg })),
+  ].filter((s, j, arr) => arr.findIndex((t) => t.i === s.i) === j).slice(0, 4);
+  return { answer, sources, lines, scored };
+}
+
 /** Retry-After (сек или HTTP-date) → мс. Cap 10с чтобы не держать isolate. */
-function parseEmbedRetryAfterMs(v: string | null): number | null {
-  if (!v) return null;
+function parseEmbedRetryAfterMs(v: string | null): number | null {  if (!v) return null;
   const s = v.trim();
   const secs = Number(s);
   if (Number.isFinite(secs)) return Math.min(Math.max(secs * 1000, 0), 10_000);
@@ -267,7 +1184,54 @@ async function fetchEmbedWithRetry(tag: string, url: string, init: RequestInit, 
 }
 
 async function embedQuery(env: Env, query: string): Promise<number[]> {
-  const { provider, model } = await getIndexManifest(env);
+  const { provider, model, builtAt } = await getIndexManifest(env);
+  // D1-кэш векторов запроса (общий на всех юзеров, TTL 30 дней):
+  // повторные вопросы — 0 вызовов API эмбеддингов.
+  // Тег сборки в ключе: после пересборки индекса векторы считаются заново.
+  const qn = `${builtAt || "none"}|${normAskQuery(query)}`;
+  try {
+    await ensureEmbedCacheTable(env);
+    const hit = await env.DB.prepare(
+      "SELECT vec FROM embed_cache WHERE provider=? AND model=? AND qhash=? AND created_at > datetime('now','-30 days')"
+    )
+      .bind(provider, model, qn)
+      .first<{ vec: string }>();
+    if (hit?.vec) {
+      const v = JSON.parse(hit.vec) as number[];
+      if (Array.isArray(v) && v.length > 10) return v;
+    }
+  } catch {
+    /* кэш недоступен — идём в API */
+  }
+  const vec = await embedQueryFresh(env, query, provider, model);
+  try {
+    await env.DB.prepare(
+      "INSERT INTO embed_cache (provider, model, qhash, vec, created_at) VALUES (?,?,?,?,datetime('now')) " +
+        "ON CONFLICT(provider, model, qhash) DO UPDATE SET vec=excluded.vec, created_at=excluded.created_at"
+    )
+      .bind(provider, model, qn, JSON.stringify(vec))
+      .run();
+    // ленивая чистка протухших (при записи)
+    try {
+      await env.DB.prepare("DELETE FROM embed_cache WHERE created_at < datetime('now','-30 days')").run();
+    } catch {}
+  } catch {
+    /* запись кэша не должна ронять запрос */
+  }
+  return vec;
+}
+
+async function ensureEmbedCacheTable(env: Env): Promise<void> {
+  try {
+    await env.DB.prepare(
+      "CREATE TABLE IF NOT EXISTS embed_cache (provider TEXT NOT NULL, model TEXT NOT NULL, qhash TEXT NOT NULL, vec TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (provider, model, qhash))"
+    ).run();
+  } catch {
+    /* уже есть — ок */
+  }
+}
+
+async function embedQueryFresh(env: Env, query: string, provider: string, model: string): Promise<number[]> {
   switch (provider) {
     case "jina": {
       const r = await fetchEmbedWithRetry(
@@ -372,6 +1336,164 @@ async function getIndexManifest(env: Env): Promise<ManifestInfo> {
   return info;
 }
 
+/** Cross-encoder reranking кандидатов. Каскад: Jina v2-m3 → Cohere multilingual → Voyage rerank-2
+ *  → LLM-listwise (Groq) → Workers AI bge-reranker-base → исходный порядок.
+ *  Возвращает порядок индексов contexts по убыванию релевантности (topN). */
+type RerankLink = { id: string; run: (query: string, texts: string[], topN: number) => Promise<number[]> };
+
+function rerankOrderFromPairs(arr: any[], contextsLen: number, topN: number): number[] {
+  const ranked = arr
+    .map((x: any) => ({ i: Number(x?.index ?? x?.id), s: Number(x?.relevance_score ?? x?.score) }))
+    .filter((x) => Number.isInteger(x.i) && x.i >= 0 && x.i < contextsLen);
+  if (!ranked.length) throw new Error("rerank: пустой/битый ответ");
+  ranked.sort((a, b) => b.s - a.s);
+  return ranked.slice(0, topN).map((x) => x.i);
+}
+
+function rerankLinks(env: Env): RerankLink[] {
+  const links: RerankLink[] = [];
+  if (env.VOYAGE_API_KEY) {
+    links.push({
+      id: "voyage-rerank",
+      run: async (query, texts, topN) => {
+        const r = await fetch("https://api.voyageai.com/v1/rerank", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.VOYAGE_API_KEY}` },
+          body: JSON.stringify({
+            model: "rerank-2",
+            query,
+            documents: texts.map((t) => String(t ?? "").slice(0, 4000)),
+            top_k: topN,
+          }),
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!r.ok) throw statusError("voyage-rerank", r, await r.text());
+        const d: any = await r.json();
+        return rerankOrderFromPairs(d.data ?? d.results ?? [], texts.length, topN);
+      },
+    });
+  }
+  if (env.COHERE_API_KEY) {
+    links.push({
+      id: "cohere-rerank",
+      run: async (query, texts, topN) => {
+        const r = await fetch("https://api.cohere.com/v2/rerank", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.COHERE_API_KEY}` },
+          body: JSON.stringify({
+            model: "rerank-multilingual-v3.0",
+            query,
+            documents: texts.map((t) => String(t ?? "").slice(0, 4000)),
+            top_n: topN,
+          }),
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!r.ok) throw statusError("cohere-rerank", r, await r.text());
+        const d: any = await r.json();
+        return rerankOrderFromPairs(d.results ?? [], texts.length, topN);
+      },
+    });
+  }
+  // LLM-listwise: gpt-oss-20b выбирает лучшие фрагменты (русский держит хорошо).
+  links.push({
+    id: "llm-rerank",
+    run: async (query, texts, topN) => {
+      const list = texts
+        .map((t, i) => `[${i}] ${normWs(String(t ?? "")).slice(0, 260)}`)
+        .join("\n");
+      const prompt = `Ты — эксперт по строительным нормам Казахстана.
+Даны вопрос и ${texts.length} нумерованных фрагментов из нормативов.
+Выбери до ${topN} фрагментов, которые лучше всего отвечают на вопрос, по убыванию релевантности.
+Верни СТРОГО JSON без markdown: {"best":[номера]}
+Только индексы из списка, без повторов.
+
+Вопрос: ${query}
+
+Фрагменты:
+${list}`;
+      const raw = await groqText(env, env.GROQ_MODEL, prompt, 80, 0.1, 6000);
+      let text = stripThink(raw.trim());
+      const start = text.indexOf("{");
+      const end = text.lastIndexOf("}");
+      if (start >= 0 && end > start) text = text.slice(start, end + 1);
+      let d: any = null;
+      try {
+        d = JSON.parse(text);
+      } catch {
+        // модель ответила массивом [1,4,2] — принимаем и это
+        const m = text.match(/\[[\d,\s]+\]/);
+        d = m ? { best: JSON.parse(m[0]) } : null;
+      }
+      const nums: number[] = (Array.isArray(d?.best) ? d.best : [])
+        .map((x: any) => Number(x))
+        .filter((x: number) => Number.isInteger(x) && x >= 0 && x < texts.length);
+      const uniq = [...new Set(nums)].slice(0, topN);
+      if (!uniq.length) throw new Error(`llm-rerank: нет индексов (${text.slice(0, 80)})`);
+      // Модель может вернуть меньше topN — добиваем оставшимися в исходном порядке.
+      return [...uniq, ...texts.map((_, i) => i).filter((i) => !uniq.includes(i))].slice(0, Math.min(topN, texts.length));
+    },
+  });
+  if (env.AI) {
+    // bge-reranker-base (en/zh) на русском ухудшает хвост выдачи — оставлен только для явного force в eval.
+    links.push({
+      id: "workers-rerank",
+      run: async (query, texts, topN) => {
+        const out: any = await env.AI.run("@cf/baai/bge-reranker-base", {
+          query,
+          contexts: texts.map((t) => ({ text: String(t ?? "").slice(0, 450) })),
+          top_k: Math.min(topN, texts.length),
+        });
+        const arr = Array.isArray(out) ? out : out?.response;
+        if (!Array.isArray(arr) || !arr.length) throw new Error("workers-rerank: пустой ответ");
+        return rerankOrderFromPairs(arr, texts.length, topN);
+      },
+    });
+  }
+  return links;
+}
+
+export async function rerankContexts(
+  env: Env,
+  query: string,
+  contexts: string[],
+  topN: number,
+  forceId?: string
+): Promise<{ order: number[]; model: string; errors: string[] }> {
+  const identity = { order: contexts.map((_, i) => i).slice(0, topN), model: "none", errors: [] as string[] };
+  if (contexts.length <= 1) return identity;
+  let values: Record<string, string> = {};
+  try {
+    values = (await getSettings(env)).values;
+  } catch {}
+  const budgets = await getLlmBudgetStates(env);
+  const now = Date.now();
+  const errors: string[] = [];
+  let ran = false;
+  for (const link of rerankLinks(env)) {
+    if (forceId && link.id !== forceId) continue;
+    // workers-rerank (bge-base) на русском портит хвост — только явный force для замеров
+    if (!forceId && link.id === "workers-rerank") continue;
+    if (!forceId && linkBlocked(budgets.get(`${link.id}\n`), llmBudgetCap(values, link.id), now)) {
+      errors.push(`${link.id}: бюджет исчерпан/звено остывает`);
+      continue;
+    }
+    ran = true;
+    try {
+      const order = await link.run(query, contexts, topN);
+      if (order.length < Math.min(topN, contexts.length)) throw new Error("rerank: неполный ответ");
+      await noteLlmUsed(env, link.id, "");
+      return { order, model: link.id, errors };
+    } catch (e: any) {
+      const msg = `${link.id}: ${String(e?.message ?? e).slice(0, 160)}`;
+      errors.push(msg);
+      console.error(`[rerank] ${msg}`);
+      if (retryableLlmError(e)) await noteLlmDown(env, link.id, "", e?.retryAfterMs);
+    }
+  }
+  if (!ran && !forceId) errors.push("все rerank-звенья скипнуты (бюджеты/брейкер)");
+  return { ...identity, errors };
+}
+
 async function vectorTopK(env: Env, query: string, k: number): Promise<number[]> {
   const idx = await loadIndex(env);
   const q = await embedQuery(env, query);
@@ -448,6 +1570,29 @@ const SETTING_DEFS: Record<string, { def: string; min: number; max: number }> = 
   explain_cap: { def: "40", min: 1, max: 10000 },
   cap_groq_rpd: { def: "1000", min: 1, max: 10000000 },
   cap_embed_rpd: { def: "100000", min: 1, max: 1000000000 },
+  // Дневные бюджеты LLM-звеньев (брейкер): 0 = звено мягко отключено.
+  // В админке пока без отдельных полей — правятся тем же API настроек.
+  budget_groq: { def: "90", min: 0, max: 10000000 },
+  budget_groq_alt: { def: "150", min: 0, max: 10000000 },
+  budget_gemini: { def: "1200", min: 0, max: 10000000 },
+  budget_cerebras: { def: "350", min: 0, max: 10000000 },
+  budget_openrouter: { def: "40", min: 0, max: 10000000 },
+  budget_deepseek: { def: "150", min: 0, max: 10000000 },
+  "budget_mistral-chat": { def: "150", min: 0, max: 10000000 },
+  "budget_cohere-chat": { def: "150", min: 0, max: 10000000 },
+  budget_custom: { def: "1000000", min: 0, max: 10000000 },
+  "budget_workers-ai": { def: "800", min: 0, max: 10000000 },
+  budget_zen: { def: "100", min: 0, max: 10000000 },
+  budget_pollinations: { def: "300", min: 0, max: 10000000 },
+  budget_jina_rerank: { def: "300", min: 0, max: 10000000 },
+  budget_cohere_rerank: { def: "300", min: 0, max: 10000000 },
+  budget_voyage_rerank: { def: "300", min: 0, max: 10000000 },
+  budget_llm_rerank: { def: "500", min: 0, max: 10000000 },
+  budget_workers_rerank: { def: "800", min: 0, max: 10000000 },
+  // Смарт-фичи (0 = выключено, 1 = включено): понимание запроса, reranking, второй проход
+  smart_rewrite: { def: "1", min: 0, max: 1 },
+  smart_rerank: { def: "1", min: 0, max: 1 },
+  smart_second_pass: { def: "1", min: 0, max: 1 },
 };
 let settingsCache: { values: Record<string, string>; updated: Record<string, string>; at: number } | null = null;
 const SETTINGS_TTL_MS = 5 * 60 * 1000;
@@ -558,6 +1703,27 @@ async function chargeHybrid(
   if (fromBalance > state.balance) {
     return { ok: false, state, need: fromBalance - state.balance };
   }
+  const nowIso = new Date().toISOString();
+  // Баланс списываем guard-UPDATE первым: при гонке двух запросов второй увидит
+  // changes=0 и вернёт 402 вместо ухода в минус. Daily-доля пишется только после успеха.
+  if (fromBalance > 0) {
+    let changed = 0;
+    try {
+      const upd: any = await env.DB.prepare(
+        "UPDATE balances SET credits = credits - ?, updated_at = ? WHERE subject = ? AND credits >= ?"
+      )
+        .bind(fromBalance, nowIso, subject, fromBalance)
+        .run();
+      changed = Number(upd?.meta?.changes ?? upd?.changes ?? 0) || 0;
+    } catch {
+      changed = 0;
+    }
+    if (!changed) {
+      const fresh = await getCreditsState(env, subject, isUser);
+      const need = Math.max(0, cost - fresh.daily.remaining - fresh.balance);
+      return { ok: false, state: fresh, need };
+    }
+  }
   const stmts: D1PreparedStatement[] = [];
   if (fromDaily > 0) {
     stmts.push(
@@ -566,22 +1732,13 @@ async function chargeHybrid(
       ).bind(period, subject, fromDaily)
     );
   }
-  if (fromBalance > 0) {
-    stmts.push(
-      env.DB.prepare("UPDATE balances SET credits = credits - ?, updated_at = ? WHERE subject = ?").bind(
-        fromBalance,
-        new Date().toISOString(),
-        subject
-      )
-    );
-  }
   stmts.push(
     env.DB.prepare("INSERT INTO ledger (subject, delta, kind, meta, created_at) VALUES (?, ?, ?, ?, ?)").bind(
       subject,
       -cost,
       kind,
       meta ?? JSON.stringify({ split: { daily: fromDaily, balance: fromBalance } }),
-      new Date().toISOString()
+      nowIso
     )
   );
   await env.DB.batch(stmts);
@@ -635,9 +1792,10 @@ function normAskQuery(q: string): string {
   return String(q ?? "").toLowerCase().replace(/ё/g, "е").replace(/\s+/g, " ").trim().slice(0, 300);
 }
 
-/** Ключ кэша /api/ask: режим + нормализованный запрос (уточнения не кэшируем — там история). */
-async function askCacheKey(query: string, mode: string): Promise<string> {
-  const data = new TextEncoder().encode(`ask|${mode}|${normAskQuery(query)}`);
+/** Ключ кэша /api/ask: режим + сборка индекса + нормализованный запрос.
+ *  builtAt в ключе — старые ответы не переживают обновление норм (уточнения не кэшируем — там история). */
+export async function askCacheKey(query: string, mode: string, buildTag = "none"): Promise<string> {
+  const data = new TextEncoder().encode(`ask|${mode}|${buildTag}|${normAskQuery(query)}`);
   const buf = await crypto.subtle.digest("SHA-256", data);
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
@@ -646,11 +1804,174 @@ async function askCacheKey(query: string, mode: string): Promise<string> {
 const ASK_CACHE_TTL_GROUNDED = 48 * 3600 * 1000;
 const ASK_CACHE_TTL_UNGROUNDED = 12 * 3600 * 1000;
 
+// ---------- Понимание запроса (smart_rewrite): LLM переписывает вопрос в поисковые формулировки ----------
+
+export interface RewriteResult {
+  standalone: string;
+  queries: string[];
+  terms: string[];
+}
+
+const REWRITE_EMPTY: RewriteResult = { standalone: "", queries: [], terms: [] };
+const REWRITE_CACHE_TTL_DAYS = 30;
+const REWRITE_MAX_QUERIES = 3;
+/** Версия промпта в ключе кэша: смена промпта не отдаёт старые переформулировки. */
+const REWRITE_PROMPT_VERSION = "2";
+const DOC_NUM_RE = /(снип|сп|сн|ст|гост|тр)\s*[№#]?\s*\d[\d.\-*]*/gi;
+
+async function ensureRewriteCacheTable(env: Env): Promise<void> {
+  try {
+    await env.DB.prepare(
+      "CREATE TABLE IF NOT EXISTS rewrite_cache (hash TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT NOT NULL)"
+    ).run();
+  } catch {
+    /* уже есть — ок */
+  }
+}
+
+async function rewriteCacheKey(kind: string, query: string, history?: Array<{ q: string; a: string }>): Promise<string> {
+  const hist = (history ?? []).map((h) => `${normAskQuery(h.q)}|${normAskQuery(h.a).slice(0, 120)}`).join("~");
+  const data = new TextEncoder().encode(`rw|${REWRITE_PROMPT_VERSION}|${kind}|${hist}|${normAskQuery(query)}`);
+  const buf = await crypto.subtle.digest("SHA-256", data);
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function parseRewriteJson(raw: string, query: string): RewriteResult {
+  let text = stripThink(String(raw ?? "").trim());
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start >= 0 && end > start) text = text.slice(start, end + 1);
+  let d: any = null;
+  try {
+    d = JSON.parse(text);
+  } catch {
+    d = null;
+  }
+  const clean = (v: unknown, max = 220): string => normWs(String(v ?? "")).slice(0, max);
+  if (!d || typeof d !== "object") {
+    // Модель вернула не-JSON: вытаскиваем строки из "queries":[...] регуляркой
+    const block = /"queries"\s*:\s*\[([\s\S]*?)\]/.exec(text)?.[1] ?? "";
+    const found = [...block.matchAll(/"([^"]{3,220})"/g)].map((m) => m[1]);
+    if (!found.length) {
+      console.error(`[rewrite] bad json: ${text.slice(0, 180)}`);
+      return { ...REWRITE_EMPTY, standalone: query };
+    }
+    d = { queries: found };
+    d.__raw = text.slice(0, 500);
+  }
+  const queries: string[] = [];
+  const origHasDocNum = DOC_NUM_RE.test(query);
+  DOC_NUM_RE.lastIndex = 0;
+  for (const q of Array.isArray(d?.queries) ? d.queries : []) {
+    let s = clean(q);
+    // Модель любит выдумывать «СНиП 2.04.02-85» — вырезаем, если номера не было в вопросе.
+    if (!origHasDocNum) s = normWs(s.replace(DOC_NUM_RE, " "));
+    if (s.length >= 3 && !queries.some((x) => x.toLowerCase() === s.toLowerCase())) queries.push(s);
+    if (queries.length >= REWRITE_MAX_QUERIES) break;
+  }
+  const terms: string[] = [];
+  for (const t of Array.isArray(d?.terms) ? d.terms : []) {
+    const s = clean(t, 60);
+    if (s.length >= 2 && !terms.includes(s)) terms.push(s);
+    if (terms.length >= 6) break;
+  }
+  const res: RewriteResult = { standalone: clean(d?.standalone, 300) || query, queries, terms };
+  if (d?.__raw) (res as any).__raw = String(d.__raw).slice(0, 500);
+  return res;
+}
+
+/** Переписывание запроса дешёвой моделью: Groq primary (4с) → Workers AI (8с) → без изменений. */
+export async function rewriteSmart(
+  env: Env,
+  query: string,
+  opts: { history?: Array<{ q: string; a: string }>; followUp?: boolean } = {}
+): Promise<RewriteResult> {
+  const fallback: RewriteResult = { ...REWRITE_EMPTY, standalone: query };
+  const q = String(query ?? "").trim();
+  if (!q || q.length > 400) return fallback;
+  try {
+    const { values } = await getSettings(env);
+    if (settingInt(values, "smart_rewrite", "1") !== 1) return fallback;
+  } catch {
+    /* settings недоступны — пробуем дальше */
+  }
+  const kind = opts.followUp ? "followup" : "query";
+  const history = (opts.history ?? []).filter((h) => h.q || h.a).slice(-2);
+  let hash = "";
+  try {
+    hash = await rewriteCacheKey(kind, q, history);
+    await ensureRewriteCacheTable(env);
+    const hit = await env.DB.prepare(
+      `SELECT payload FROM rewrite_cache WHERE hash=? AND created_at > datetime('now','-${REWRITE_CACHE_TTL_DAYS} days')`
+    )
+      .bind(hash)
+      .first<{ payload: string }>();
+    if (hit?.payload) {
+      const parsed = JSON.parse(hit.payload) as RewriteResult;
+      if (parsed && (parsed.standalone || parsed.queries?.length)) return parsed;
+    }
+  } catch {
+    /* кэш недоступен — идём в LLM */
+  }
+  const histText = history.length
+    ? `\nИстория диалога (раскрой местоимения и подразумеваемый контекст):\n${history
+        .map((h, i) => `${i + 1}. Вопрос: ${String(h.q).slice(0, 200)}\n   Ответ: ${String(h.a).slice(0, 300)}`)
+        .join("\n")}\n`
+    : "";
+  const prompt = `Ты — поисковый ассистент по строительным нормам Казахстана (СНиП/СП/СН/СТ РК).
+Преобразуй вопрос пользователя в запросы для поиска по нормативной базе.
+Верни СТРОГО JSON без markdown:
+{"standalone":"...","queries":["...","..."],"terms":["..."]}
+Правила:
+- standalone: самодостаточный вопрос (при истории — раскрой местоимения: «а для детских садов?» → «Какие требования к ширине коридора в детских садах?»)
+- queries: 2-3 короткие поисковые формулировки на РУССКОМ с официальной нормативной терминологией (если вопрос на казахском — одна формулировка на казахском и русский эквивалент)
+- terms: 3-6 ключевых терминов-существительных (для полнотекстового поиска)
+- сохрани числа и единицы измерения (метры, этажи, люди, м2)
+- НЕ придумывай номера документов (СНиП/СП/СН/СТ/ГОСТ): указывай только если они есть в вопросе
+- без пояснений, без markdown${histText}
+Вопрос: ${q}`;
+  let raw = "";
+  const groqModel = env.GROQ_MODEL;
+  try {
+    raw = await groqText(env, groqModel, prompt, 220, 0.1, 4000);
+    await noteLlmUsed(env, "groq", groqModel);
+  } catch (e: any) {
+    if (fatalLlmError(e)) {
+      console.error(`[rewrite] groq fatal: ${String(e?.message ?? e).slice(0, 120)}`);
+      return fallback;
+    }
+    if (retryableLlmError(e)) await noteLlmDown(env, "groq", groqModel, e?.retryAfterMs);
+    try {
+      const out: any = await Promise.race([
+        env.AI!.run("@cf/meta/llama-3.1-8b-instruct-fast", { prompt, max_tokens: 220, temperature: 0.1 }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("rewrite: workers-ai таймаут")), 8000)),
+      ]);
+      raw = typeof out === "string" ? out : String(out?.response ?? "");
+    } catch (e2: any) {
+      console.error(`[rewrite] llm недоступен: ${String(e2?.message ?? e2).slice(0, 120)}`);
+      return fallback;
+    }
+  }
+  const parsed = parseRewriteJson(raw, q);
+  if (hash && (parsed.queries.length || parsed.standalone !== q)) {
+    try {
+      await env.DB.prepare(
+        "INSERT INTO rewrite_cache (hash, payload, created_at) VALUES (?,?,datetime('now')) ON CONFLICT(hash) DO UPDATE SET payload=excluded.payload, created_at=excluded.created_at"
+      )
+        .bind(hash, JSON.stringify(parsed))
+        .run();
+    } catch {}
+  }
+  return parsed;
+}
+
+
 // ---------- LLM-цепочка фолбэков: Groq → Groq-alt → Gemini → Cerebras → OpenRouter → DeepSeek → Mistral → Cohere → Custom → Workers AI → Zen → Pollinations → extractive ----------
 
 export type LlmProvider =
   | "groq" | "groq-alt" | "gemini" | "cerebras" | "openrouter" | "deepseek"
-  | "mistral-chat" | "cohere-chat" | "custom" | "workers-ai" | "zen" | "pollinations" | "extractive";
+  | "mistral-chat" | "cohere-chat" | "custom" | "workers-ai" | "zen" | "pollinations" | "extractive"
+  | "values";
 
 /** Альтернативные бесплатные бакеты Groq (отдельные лимиты моделей; дубликат primary скипается).
  *  ВАЖНО: Llama-модели (8b-instant, 70b-versatile, scout) этому аккаунту НЕДОСТУПНЫ
@@ -689,6 +2010,11 @@ function fatalLlmError(e: any): boolean {
 function statusError(prefix: string, r: Response, body: string): Error {
   const e: any = new Error(`${prefix} ${r.status}: ${body.slice(0, 120)}`);
   e.status = r.status;
+  // Retry-After для брейкера (429 провайдеров): уважаем серверную паузу.
+  try {
+    const ra = parseEmbedRetryAfterMs(r.headers.get("Retry-After"));
+    if (ra != null) e.retryAfterMs = ra;
+  } catch {}
   return e;
 }
 
@@ -698,7 +2024,7 @@ const stripThink = (t: string): string => t.replace(/<think>[\s\S]*?<\/think>/g,
  *  остальным (Llama и др.) параметр слать нельзя — Groq отвечает 400 и звено молча скипается. */
 const REASONING_EFFORT_MODELS = new Set(["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"]);
 
-async function groqText(env: Env, model: string, prompt: string, maxTokens: number, temp = 0.1): Promise<string> {
+async function groqText(env: Env, model: string, prompt: string, maxTokens: number, temp = 0.1, timeoutMs = 20000): Promise<string> {
   const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.GROQ_API_KEY}` },
@@ -709,7 +2035,7 @@ async function groqText(env: Env, model: string, prompt: string, maxTokens: numb
       max_tokens: maxTokens,
       ...(REASONING_EFFORT_MODELS.has(model) ? { reasoning_effort: "low" } : {}),
     }),
-    signal: AbortSignal.timeout(20000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!r.ok) throw statusError(`groq ${model}`, r, await r.text());
   const d: any = await r.json();
@@ -868,7 +2194,9 @@ async function pollinationsText(prompt: string, maxTokens: number): Promise<stri
 }
 
 interface LlmLink {
-  id: Exclude<LlmProvider, "groq" | "extractive">;
+  id: Exclude<LlmProvider, "groq" | "extractive" | "values">;
+  /** Вариант бакета квоты: модель для groq-alt, иначе "". */
+  variant: string;
   run: (prompt: string, maxTokens: number) => Promise<string>;
 }
 
@@ -890,40 +2218,149 @@ export async function fallbackLinks(env: Env): Promise<LlmLink[]> {
   if (await llmEnabled(env, "llm_groq_alt")) {
     for (const m of GROQ_ALT_MODELS) {
       if (m === env.GROQ_MODEL) continue;
-      links.push({ id: "groq-alt", run: (p, t) => groqText(env, m, p, t) });
+      links.push({ id: "groq-alt", variant: m, run: (p, t) => groqText(env, m, p, t) });
     }
   }
   if ((await llmEnabled(env, "llm_gemini")) && env.GEMINI_API_KEY) {
-    links.push({ id: "gemini", run: (p, t) => geminiText(env, p, t) });
+    links.push({ id: "gemini", variant: "", run: (p, t) => geminiText(env, p, t) });
   }
   if ((await llmEnabled(env, "llm_cerebras")) && env.CEREBRAS_API_KEY) {
-    links.push({ id: "cerebras", run: (p, t) => cerebrasText(env, p, t) });
+    links.push({ id: "cerebras", variant: "", run: (p, t) => cerebrasText(env, p, t) });
   }
   if ((await llmEnabled(env, "llm_openrouter")) && env.OPENROUTER_API_KEY) {
-    links.push({ id: "openrouter", run: (p, t) => openrouterText(env, p, t) });
+    links.push({ id: "openrouter", variant: "", run: (p, t) => openrouterText(env, p, t) });
   }
   if ((await llmEnabled(env, "llm_deepseek")) && env.DEEPSEEK_API_KEY) {
-    links.push({ id: "deepseek", run: (p, t) => deepseekText(env, p, t) });
+    links.push({ id: "deepseek", variant: "", run: (p, t) => deepseekText(env, p, t) });
   }
   if ((await llmEnabled(env, "llm_mistral_chat")) && env.MISTRAL_API_KEY) {
-    links.push({ id: "mistral-chat", run: (p, t) => mistralChatText(env, p, t) });
+    links.push({ id: "mistral-chat", variant: "", run: (p, t) => mistralChatText(env, p, t) });
   }
   if ((await llmEnabled(env, "llm_cohere_chat")) && env.COHERE_API_KEY) {
-    links.push({ id: "cohere-chat", run: (p, t) => cohereChatText(env, p, t) });
+    links.push({ id: "cohere-chat", variant: "", run: (p, t) => cohereChatText(env, p, t) });
   }
   if ((await llmEnabled(env, "llm_custom")) && env.LLM_CUSTOM_BASE && env.LLM_CUSTOM_KEY) {
-    links.push({ id: "custom", run: (p, t) => customLlmText(env, p, t) });
+    links.push({ id: "custom", variant: "", run: (p, t) => customLlmText(env, p, t) });
   }
   if ((await llmEnabled(env, "llm_workers")) && env.AI) {
-    links.push({ id: "workers-ai", run: (p, t) => workersAiText(env, p, t) });
+    links.push({ id: "workers-ai", variant: "", run: (p, t) => workersAiText(env, p, t) });
   }
   if ((await zenOptIn(env)) && env.OPENCODE_API_KEY) {
-    links.push({ id: "zen", run: (p, t) => zenText(env, p, t) });
+    links.push({ id: "zen", variant: "", run: (p, t) => zenText(env, p, t) });
   }
   if (await llmEnabled(env, "llm_pollinations")) {
-    links.push({ id: "pollinations", run: (p, t) => pollinationsText(p, t) });
+    links.push({ id: "pollinations", variant: "", run: (p, t) => pollinationsText(p, t) });
   }
   return links;
+}
+
+// ---------- Circuit breaker + дневные бюджеты LLM-звеньев ----------
+// Мёртвое звено (429/5xx) скипается без fetch до down_until; исчерпанный
+// дневной бюджет — до 00:00 UTC. Состояние — D1 llm_budget (self-healing),
+// один SELECT на весь обход цепочки. Установка budget_<id>=0 в settings
+// мягко отключает звено. Капы — реалистичные free-tier сутки.
+
+const LLM_BUDGET_DEFAULTS: Record<string, number> = {
+  "groq": 90,
+  "groq-alt": 150,
+  "gemini": 1200,
+  "cerebras": 350,
+  "openrouter": 40,
+  "deepseek": 150,
+  "mistral-chat": 150,
+  "cohere-chat": 150,
+  "custom": 1000000,
+  "workers-ai": 800,
+  "zen": 100,
+  "pollinations": 300,
+  // Rerank-звенья (каскад /api/ask): trial-квоты Jina/Cohere/Voyage + Groq-listwise
+  "jina-rerank": 300,
+  "cohere-rerank": 300,
+  "voyage-rerank": 300,
+  "llm-rerank": 500,
+  "workers-rerank": 800,
+};
+
+async function ensureLlmBudgetTable(env: Env): Promise<void> {
+  try {
+    await env.DB.prepare(
+      "CREATE TABLE IF NOT EXISTS llm_budget (provider TEXT NOT NULL, variant TEXT NOT NULL DEFAULT '', day TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0, down_until INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (provider, variant, day))"
+    ).run();
+  } catch {
+    /* уже есть — ок */
+  }
+}
+
+function llmBudgetCap(values: Record<string, string>, provider: string): number {
+  const def = LLM_BUDGET_DEFAULTS[provider] ?? 100;
+  // Ключ настройки: дефисы id → подчёркивания (budget_groq-alt → budget_groq_alt).
+  const raw = values[`budget_${provider.replace(/-/g, "_")}`];
+  if (raw === undefined) return def;
+  const v = Math.floor(Number(raw));
+  if (!Number.isFinite(v)) return def;
+  return Math.min(10000000, Math.max(0, v));
+}
+
+interface LlmBudgetRow {
+  used: number;
+  downUntil: number;
+}
+
+/** Все строки текущего дня одним SELECT: ключ `${provider}\n${variant}`. */
+async function getLlmBudgetStates(env: Env): Promise<Map<string, LlmBudgetRow>> {
+  const out = new Map<string, LlmBudgetRow>();
+  try {
+    await ensureLlmBudgetTable(env);
+    const rows = await env.DB.prepare(
+      "SELECT provider, variant, used, down_until FROM llm_budget WHERE day=?"
+    )
+      .bind(todayKey())
+      .all<{ provider: string; variant: string; used: number; down_until: number }>();
+    for (const r of rows.results ?? []) {
+      out.set(`${r.provider}\n${r.variant ?? ""}`, { used: r.used ?? 0, downUntil: r.down_until ?? 0 });
+    }
+  } catch {
+    /* D1 недоступен — считаем все звенья живыми */
+  }
+  return out;
+}
+
+function linkBlocked(state: LlmBudgetRow | undefined, cap: number, now: number): boolean {
+  if (cap <= 0) return true;
+  if (!state) return false;
+  if (state.downUntil > now) return true;
+  if (state.used >= cap) return true;
+  return false;
+}
+
+/** Успешный вызов API (и мусор-JSON — квота провайдера всё равно потрачена). */
+async function noteLlmUsed(env: Env, provider: string, variant: string): Promise<void> {
+  try {
+    await env.DB.prepare(
+      "INSERT INTO llm_budget (provider, variant, day, used, down_until) VALUES (?,?,?,1,0) " +
+        "ON CONFLICT(provider, variant, day) DO UPDATE SET used=used+1"
+    )
+      .bind(provider, variant, todayKey())
+      .run();
+  } catch {
+    /* учёт не должен ронять ответ */
+  }
+}
+
+/** Retryable-ошибка: глушим звено (Retry-After сервера, иначе 60с; кап 10 мин). */
+async function noteLlmDown(env: Env, provider: string, variant: string, retryAfterMs?: number | null): Promise<void> {
+  try {
+    const pause = Math.min(Math.max(retryAfterMs ?? 60000, 15000), 600000);
+    const until = Date.now() + pause;
+    await env.DB.prepare(
+      "INSERT INTO llm_budget (provider, variant, day, used, down_until) VALUES (?,?,?,0,?) " +
+        "ON CONFLICT(provider, variant, day) DO UPDATE SET down_until=MAX(down_until,excluded.down_until)"
+    )
+      .bind(provider, variant, todayKey(), until)
+      .run();
+  } catch {
+    /* учёт не должен ронять ответ */
+  }
 }
 
 /** Защитный парсинг JSON-ответа модели (как раньше, вынесен для переиспользования звеньями). */
@@ -993,9 +2430,10 @@ export function isTableLike(t: string, ty?: string): boolean {
 
 const TABLE_NOTE = "[таблица: первое число строки — номер строки, а значение требования — число в конце строки]";
 const TABLE_RULE =
-  "7. В ТАБЛИЦАХ первое число строки — это НОМЕР СТРОКИ, а не значение! Значение требования — число в КОНЦЕ строки (часто рядом с единицей из заголовка таблицы: м, мм). " +
+  "7. В ТАБЛИЦАХ первое число строки — это НОМЕР СТРОКИ, а не значение и не номер этажа! Значение требования — число в КОНЦЕ строки рядом с единицей (м, мм, эт.). " +
   "Пример: «10 Жилые здания … освещенности … 15» при заголовке «в метрах» означает значение 15, а 10 — номер строки. " +
-  "Голое число без единицы измерения рядом значением не является";
+  "Голые числа (номера строк, номера страниц-колонтитулы внизу) значением не являются. " +
+  "«Этажность застройки» (средневзвешенная, характеристика района) — НЕ то же, что этаж размещения объекта.";
 
 const ASK_STRICT_SUFFIX = "\n\n(ВАЖНО: quote обязана быть дословным фрагментом контекста)";
 
@@ -1006,34 +2444,42 @@ function normQuote(s: string): string {
 
 /**
  * Ремонт недословной цитаты вместо скипа звена: подменяем ближайшим фрагментом
- * контекста (косинусная схожесть по словам). Возврат — всегда подстрока контекста,
- * поэтому verifyGrounded после ремонта проходит. Пустая цитата → начало топ-контекста.
+ * контекста (косинусная схожесть по словам). Возвращаем и индекс контекста —
+ * вызыватель обязан передвинуть paragraph/page/sources на тот же чанк.
+ * Пустая цитата → начало топ-контекста (idx 0).
  */
-function repairQuote(quote: string, contexts: string[]): string {
+function repairQuoteIdx(quote: string, contexts: string[]): { quote: string; idx: number } {
   const q = normQuote(quote);
-  if (!contexts.length) return String(quote ?? "").slice(0, 500);
-  if (!q) return contexts[0].slice(0, 500);
-  for (const c of contexts) {
-    if (normQuote(c).includes(q)) return quote; // дословная — оставляем как есть
+  if (!contexts.length) return { quote: String(quote ?? "").slice(0, 500), idx: 0 };
+  if (!q) return { quote: contexts[0].slice(0, 500), idx: 0 };
+  for (let k = 0; k < contexts.length; k++) {
+    if (normQuote(contexts[k]).includes(q)) return { quote, idx: k }; // дословная — как есть
   }
   const qWords = new Set(q.split(" ").filter((w) => w.length > 2));
-  let best = "", bestScore = 0;
-  for (const c of contexts) {
-    const cw = new Set(normQuote(c).split(" ").filter((w) => w.length > 2));
+  let best = 0, bestScore = 0;
+  for (let k = 0; k < contexts.length; k++) {
+    const cw = new Set(normQuote(contexts[k]).split(" ").filter((w) => w.length > 2));
     if (!qWords.size || !cw.size) continue;
     let inter = 0;
     for (const w of qWords) if (cw.has(w)) inter++;
     const score = inter / Math.sqrt(qWords.size * cw.size);
     if (score > bestScore) {
       bestScore = score;
-      best = c;
+      best = k;
     }
   }
-  if (!best || bestScore < 0.2) return contexts[0].slice(0, 500);
-  let snip = best.slice(0, 500);
+  if (bestScore < 0.2) {
+    const snip0 = contexts[0].slice(0, 500);
+    return { quote: snip0, idx: 0 };
+  }
+  let snip = contexts[best].slice(0, 500);
   const dot = snip.lastIndexOf(". ");
   if (dot > 200) snip = snip.slice(0, dot + 1);
-  return snip.trim();
+  return { quote: snip.trim(), idx: best };
+}
+
+function repairQuote(quote: string, contexts: string[]): string {
+  return repairQuoteIdx(quote, contexts).quote;
 }
 
 /** Счётчики причин провалов звеньев (цепляются к бросаемой ошибке для диагностики в ledger.meta). */
@@ -1056,9 +2502,28 @@ function dominantCause(c: LlmCauses): string {
   return topN > 0 ? top : "unknown";
 }
 
+export type AskRoute = "simple" | "standard" | "complex";
+
+const ASK_COMPLEX_RE =
+  /сравн|отлич|разниц|противореч|почему|зачем|когда применять|когда нужно|если |несколько|все требован|перечень|список|сводн|что лучше|плюсы|минусы|какие |каковы/;
+const ASK_SIMPLE_RE =
+  /какая |какой |какое |сколько |минимальн|максимальн|наименьш|наибольш|равен|равна|равно|допустим|должен |должна |норма |ширина|высота|длина|площадь|расстояние|температура/;
+
 /**
- * Ответ с заземлением через цепочку: primary Groq (с 1 строгим ретраем) → фолбэки.
- * Явный «ответа нет» (is_grounded=false) принимается сразу — все звенья скажут то же.
+ * Роутер сложности (G3): простое — короткие фактоиды (меньше контекста и токенов),
+ * сложное — сравнения/списки/«почему» (полный контекст). Уточнения — всегда standard.
+ * Влияет только на глубину контекста и max_tokens, не на списание.
+ */
+export function classifyAsk(query: string, isFollowUp = false): AskRoute {
+  if (isFollowUp) return "standard";
+  const q = String(query ?? "").toLowerCase().replace(/ё/g, "е");
+  if (ASK_COMPLEX_RE.test(q) || q.length > 140) return "complex";
+  if (q.length < 90 && ASK_SIMPLE_RE.test(q)) return "simple";
+  return "standard";
+}
+
+/**
+ * Ответ с заземлением через цепочку: primary Groq (с 1 строгим ретраем) → фолбэки. * Явный «ответа нет» (is_grounded=false) принимается сразу — все звенья скажут то же.
  * Бросает только при полном провале всех звеньев (тогда вызыватель строит extractive).
  */
 export async function answerWithFallback(
@@ -1076,52 +2541,92 @@ export async function answerWithFallback(
     else causes.other++;
     return e;
   };
+  // Бюджеты/брейкер: один SELECT на обход; мёртвые и исчерпанные скипаем без fetch.
+  let budgetValues: Record<string, string> = {};
+  try {
+    budgetValues = (await getSettings(env)).values ?? {};
+  } catch {}
+  const budgets = await getLlmBudgetStates(env);
+  const now = Date.now();
+  const blocked = (provider: string, variant: string): boolean =>
+    linkBlocked(budgets.get(`${provider}\n${variant}`), llmBudgetCap(budgetValues, provider), now);
+  let attempted = 0;
+  let budgetSkipped = 0;
   // Резервам — ужатые контексты: им хватает фактуры для цитаты, а токены бережём.
   const shortCtx = shortContexts ?? contexts;
   // primary Groq: обычная попытка + строгая (как раньше)
-  for (const extra of ["", ASK_STRICT_SUFFIX]) {
-    try {
-      const parsed = extractJsonAnswer(await groqText(env, env.GROQ_MODEL, makePrompt(extra, contexts), maxTokens));
-      if (parsed?.[PARSE_ERROR]) {
-        lastErr = noteErr(new Error("groq: bad json"), true);
-        console.error(`[llm] groq ${env.GROQ_MODEL}: bad json`);
-        continue; // мусор вместо JSON — пробуем дальше, а не выдаём за вердикт
+  const groqVar = env.GROQ_MODEL ?? "";
+  if (!blocked("groq", groqVar)) {
+    for (const extra of ["", ASK_STRICT_SUFFIX]) {
+      attempted++;
+      try {
+        const raw = await groqText(env, env.GROQ_MODEL, makePrompt(extra, contexts), maxTokens);
+        await noteLlmUsed(env, "groq", groqVar);
+        const parsed = extractJsonAnswer(raw);
+        if (parsed?.[PARSE_ERROR]) {
+          lastErr = noteErr(new Error("groq: bad json"), true);
+          console.error(`[llm] groq ${env.GROQ_MODEL}: bad json`);
+          continue; // мусор вместо JSON — пробуем дальше, а не выдаём за вердикт
+        }
+        if (parsed?.is_grounded === false || verifyGrounded(parsed, contexts)) return { answer: parsed, provider: "groq" };
+        // недословная цитата — чиним подменой фрагмента контекста, sourceIdx двигаем за ней
+        const rep = repairQuoteIdx(String(parsed?.quote ?? ""), contexts);
+        parsed.quote = rep.quote;
+        if (parsed && typeof parsed === "object") parsed.sourceIdx = rep.idx + 1;
+        return { answer: parsed, provider: "groq" };
+      } catch (e: any) {
+        if (fatalLlmError(e)) throw e;
+        lastErr = noteErr(e);
+        if (retryableLlmError(e)) await noteLlmDown(env, "groq", groqVar, e?.retryAfterMs);
+        console.error(`[llm] groq ${env.GROQ_MODEL} failed: status=${e?.status ?? "?"} ${String(e?.message ?? e).slice(0, 160)}`);
+        break;
       }
-      if (parsed?.is_grounded === false || verifyGrounded(parsed, contexts)) return { answer: parsed, provider: "groq" };
-      // недословная цитата — чиним подменой фрагмента контекста, звено засчитываем
-      parsed.quote = repairQuote(String(parsed?.quote ?? ""), contexts);
-      return { answer: parsed, provider: "groq" };
-    } catch (e: any) {
-      if (fatalLlmError(e)) throw e;
-      lastErr = noteErr(e);
-      console.error(`[llm] groq ${env.GROQ_MODEL} failed: status=${e?.status ?? "?"} ${String(e?.message ?? e).slice(0, 160)}`);
-      break;
     }
+  } else {
+    budgetSkipped++;
   }
   // фолбэки: по одной попытке (без строгого ретрая — экономим время и чужие квоты)
   for (const link of await fallbackLinks(env)) {
+    if (blocked(link.id, link.variant)) {
+      budgetSkipped++;
+      continue;
+    }
+    attempted++;
     try {
-      const parsed = extractJsonAnswer(await link.run(makePrompt("", shortCtx), maxTokens));
+      const raw = await link.run(makePrompt("", shortCtx), maxTokens);
+      await noteLlmUsed(env, link.id, link.variant);
+      const parsed = extractJsonAnswer(raw);
       if (parsed?.[PARSE_ERROR]) {
         lastErr = noteErr(new Error(`${link.id}: bad json`), true);
         console.error(`[llm] ${link.id}: bad json`);
         continue;
       }
       if (parsed?.is_grounded === false || verifyGrounded(parsed, shortCtx)) return { answer: parsed, provider: link.id };
-      // недословная цитата — чиним подменой фрагмента контекста, звено засчитываем
-      parsed.quote = repairQuote(String(parsed?.quote ?? ""), shortCtx);
+      // недословная цитата — чиним подменой фрагмента контекста, sourceIdx двигаем за ней
+      const repFb = repairQuoteIdx(String(parsed?.quote ?? ""), shortCtx);
+      parsed.quote = repFb.quote;
+      if (parsed && typeof parsed === "object") parsed.sourceIdx = repFb.idx + 1;
       return { answer: parsed, provider: link.id };
     } catch (e: any) {
       if (fatalLlmError(e)) throw e;
       lastErr = noteErr(e);
+      if (retryableLlmError(e)) await noteLlmDown(env, link.id, link.variant, e?.retryAfterMs);
       console.error(`[llm] ${link.id} failed: status=${e?.status ?? "?"} ${String(e?.message ?? e).slice(0, 160)}`);
     }
+  }
+  if (attempted === 0 && budgetSkipped > 0) {
+    // Все звенья скипнуты брейкером/бюджетами — ни одного fetch не было:
+    // сразу в extractive, без таймаутов. Вызыватель соберёт резервный ответ.
+    const e: any = new Error("llm budgets exhausted");
+    e.budgetExhausted = true;
+    e.llmCauses = causes;
+    throw e;
   }
   (lastErr as any).llmCauses = causes;
   throw lastErr;
 }
 
-async function askGroq(env: Env, query: string, contexts: string[], maxTokens: number, history?: Array<{ q: string; a: string }>): Promise<{ answer: any; provider: LlmProvider }> {
+async function askGroq(env: Env, query: string, contexts: string[], maxTokens: number, history?: Array<{ q: string; a: string }>, valueLines?: string[], secondPass = false): Promise<{ answer: any; provider: LlmProvider }> {
   // Экономия токенов: полный чанк модели не нужен — цитата и факты берутся из начала.
   // Урезанные контексты идут и в промпт, и в verifyGrounded — консистентно.
   const trimCtx = contexts.map((c) => String(c ?? "").slice(0, 1200));
@@ -1138,13 +2643,21 @@ async function askGroq(env: Env, query: string, contexts: string[], maxTokens: n
 1. Если в контексте нет ответа — верни {"answer":"В доступной нормативной базе точного требования не найдено.","quote":"","paragraph":"","is_grounded":false}
 2. quote — ДОСЛОВНАЯ цитата из контекста (можно сократить многоточием внутри, но слова должны совпадать)
 3. Ответ на русском, кратко, с конкретными числами
-4. Верни строго JSON без markdown
+4. Верни строго JSON {"answer","quote","paragraph","sourceIdx","is_grounded"} без markdown; sourceIdx — номер Источника (1..N), откуда взята quote
 5. paragraph — ТОЛЬКО номер пункта из текста вида 5.4 или 7.2.1. НИКОГДА не пиши туда номер источника («Источник 1», [1] и т.п.); если номера пункта в тексте нет — верни пустую строку
-6. Число в конце строки оглавления после многоточия — это НОМЕР СТРАНИЦЫ, а не значение требования. Количественные значения (метры, миллиметры) бери только из текста пунктов, никогда из оглавления
+6. Число в конце строки оглавления после многоточия — это НОМЕР СТРАНИЦЫ, а не значение требования. Количественные значения (метры, миллиметры, этажи, люди) бери только из текста пунктов, никогда из оглавления
 ${TABLE_RULE}
-${hist ? `\nИстория диалога (учитывай её, не повторяй уже сказанное):\n${hist}\n` : ``}`;
+8. Если в вопросе есть число N (этаж, метры, люди), а в контексте — лимит («не выше/не более/до N0», «не менее/от N0»): СРАВНИ числа. N нарушает лимит → ответ «Нет, не разрешено» с этим лимитом. N укладывается → «Да». Никогда не выводи разрешение из номеров строк таблицы
+9. «Да»/«Нет» в начале ответа — ТОЛЬКО если вопрос прямо спрашивает разрешение («можно ли», «разрешено ли», «допускается ли», «запрещено ли»). На фактоид («минимальная ширина…?», «сколько…?», «какая…?», «чему равно…?») начинай с числа: «Минимум — ≥ …» / «Не менее …», БЕЗ «Да —».
+10. Каждое число в answer обязано быть в выбранной quote. Не добавляй числа из других источников и не пересчитывай.
+11. Сравнительный вопрос («чем отличаются», «сравните», «а если…») — перечисли требования по каждому случаю отдельными строками, каждое со своей нормой.
+12. Если контекст покрывает вопрос лишь частично — ответь тем, что есть, и одной фразой укажи, чего именно в норме нет. Прятать частичный ответ нельзя.
+${hist ? `\nИстория диалога (учитывай её, не повторяй уже сказанное):\n${hist}\n` : ``}${(valueLines ?? []).length ? `\nПроверенные числовые значения из индекса норм (приоритет над пересказом, используй дословно):\n${(valueLines ?? []).join("\n")}\n` : ``}`;
+  const rebuildSuffix = secondPass
+    ? "\n\n(Первый проход вернул «не найдено». Перечитай контекст внимательно: если есть ближайшее применимое требование или частичное покрытие — верни его с дословной цитатой. Если требования действительно нет — верни is_grounded=false.)"
+    : "";
   const build = (extra: string, ctxs: string[]) =>
-    `${head}\nКонтекст:\n${ctxs.map((c, i) => `Источник ${i + 1}: ${c}`).join("\n\n")}\n\n${hist ? "Уточняющий вопрос" : "Вопрос"}: ${query}${extra}`;
+    `${head}\nКонтекст:\n${ctxs.map((c, i) => `Источник ${i + 1}: ${c}`).join("\n\n")}\n\n${hist ? "Уточняющий вопрос" : "Вопрос"}: ${query}${extra}${rebuildSuffix}`;
   return answerWithFallback(env, build, trimCtx, maxTokens, shortTrim);
 }
 
@@ -1152,6 +2665,58 @@ function verifyGrounded(answer: any, contexts: string[]): boolean {
   if (!answer.is_grounded || !answer.quote) return !!answer.is_grounded;
   const q = normWs(answer.quote).toLowerCase();
   return contexts.some((c) => normWs(c).toLowerCase().includes(q));
+}
+
+export interface AnswerAttribution {
+  answer: any;
+  sources: Array<{ i: number; d: number; p: string; pg: number | null }> | null;
+  claimIdx: number;
+  skipCache: boolean;
+}
+
+/** Атомарная атрибуция: quote → чанк (sourceIdx модели или поиск по контекстам) → paragraph/page/sources
+ *  только из ЭТОГО чанка. Смеси «п.4.4.1.37 + стр.101 + цитата таблицы» быть не должно. */
+export function attributeAnswer(
+  answer: any,
+  promptContexts: string[],
+  rawContexts: string[],
+  ids: number[],
+  chunks: CachedIndex["chunks"]
+): AnswerAttribution {
+  let skipCache = false;
+  let resolvedSources: AnswerAttribution["sources"] = null;
+  let claimIdx = 0;
+  if (!answer.extractive) {
+    const n = promptContexts.length;
+    const normedCtx = promptContexts.map((c) => normWs(c).toLowerCase());
+    const qNorm = normWs(String(answer.quote ?? "")).toLowerCase();
+    let k = 0;
+    const claimed = Number(answer.sourceIdx);
+    if (Number.isInteger(claimed) && claimed >= 1 && claimed <= n) k = claimed - 1;
+    if (qNorm && !normedCtx[k].includes(qNorm)) {
+      const found = normedCtx.findIndex((c) => c.includes(qNorm));
+      if (found >= 0) {
+        k = found; // цитата из другого источника — двигаемся за ней
+      } else {
+        // недословная цитата на этом этапе — чиним и двигаем чанк за ней, в кэш — нет
+        const rep = repairQuoteIdx(String(answer.quote ?? ""), promptContexts);
+        answer = { ...answer, quote: rep.quote, sourceIdx: rep.idx + 1 };
+        k = Math.min(Math.max(rep.idx, 0), n - 1);
+        skipCache = true;
+      }
+    }
+    claimIdx = k;
+    const claimedChunk = chunks[ids[k]];
+    const rawClaimed = rawContexts[k] || "";
+    let para = cleanParagraphValue(answer.paragraph);
+    // пункт обязан встречаться в тексте ТОГО ЖЕ чанка (иначе «п.4.3.2» при цитате таблицы)
+    if (para && !normWs(rawClaimed).toLowerCase().includes(para.toLowerCase())) para = "";
+    if (!para) para = String(claimedChunk?.p ?? "") || extractTableTitle(rawClaimed);
+    answer = { ...answer, paragraph: para, page: claimedChunk?.pg ?? null, sourceIdx: k + 1 };
+    const order = [k, ...Array.from({ length: n }, (_, j) => j).filter((j) => j !== k)];
+    resolvedSources = order.map((j) => ({ i: ids[j], d: chunks[ids[j]].d, p: chunks[ids[j]].p, pg: chunks[ids[j]].pg }));
+  }
+  return { answer, sources: resolvedSources, claimIdx, skipCache };
 }
 
 // ---------- Объяснятор фрагментов (сайдбар PDF-вьюера) ----------
@@ -1325,6 +2890,8 @@ const VOICE_MAX_BYTES = 3 * 1024 * 1024; // 3 МБ ≈ 30–60 сек opus
 
 /** Троттлинг фидбека: 30 отзывов/день с субъекта, в памяти изолята (без D1). */
 const feedbackThrottle = new Map<string, { n: number }>();
+/** Троттл /api/rewrite: 60 переформулировок в час на устройство (изолят-скоуп). */
+const rewriteThrottle = new Map<string, { at: number; n: number }>();
 const FEEDBACK_DAILY_LIMIT = 30;
 const FEEDBACK_REASONS = ["wrong_paragraph", "no_quote", "off_topic", "outdated", "other"];
 
@@ -1360,6 +2927,11 @@ export default {
         const { query, mode } = (await req.json()) as any;
         if (!query?.trim()) return json({ error: "query required" }, 400, cors);
         let charged: CreditsState | null = null;
+        // Данные для авто-возврата, если провайдер упадёт уже после списания.
+        let chargeSubject: string | null = null;
+        let chargeIsUser = false;
+        let chargeCost = 0;
+        let chargeSplit: ChargeSplit | null = null;
         if (mode === "fast") {
           const { subject, isUser } = await subjectFromRequest(env, req);
           const lim = await getLimits(env);
@@ -1372,11 +2944,26 @@ export default {
             );
           }
           charged = res.state;
+          chargeSubject = subject;
+          chargeIsUser = isUser;
+          chargeCost = lim.fast;
+          chargeSplit = res.split ?? null;
         }
         try {
           const embedding = await embedQuery(env, query);
           return json(charged ? { embedding, credits: charged } : { embedding }, 200, cors);
         } catch (e: any) {
+          // Деньги уже сняты, а эмбеддинга нет — возвращаем split и отдаём свежий баланс,
+          // иначе ретрай фронта (до 3 попыток) превратится в 5×N за один поиск.
+          let refundedState: CreditsState | null = null;
+          let refunded = false;
+          if (chargeSubject && chargeSplit) {
+            try {
+              await refundCharge(env, chargeSubject, chargeIsUser, chargeCost, chargeSplit, "refund_embed_provider");
+              refundedState = await getCreditsState(env, chargeSubject, chargeIsUser);
+              refunded = true;
+            } catch {}
+          }
           // Сбой провайдера эмбеддингов — не голый 500, а причина + провайдер из манифеста.
           // 429 (лимит Cohere/других) пробрасываем как 429, а не 502 — фронт делает
           // авторетрай с backoff и понятный тост вместо "embed failed: 502".
@@ -1396,17 +2983,72 @@ export default {
                 detail: e?.message ?? "Лимит провайдера эмбеддингов — повторите через несколько секунд",
                 provider,
                 ...(retryAfterSec != null ? { retryAfter: retryAfterSec } : {}),
+                ...(refunded ? { refunded: true, credits: refundedState } : {}),
               },
               429,
               headers
             );
           }
           return json(
-            { error: "embed_provider_failed", detail: e?.message ?? "embedding unavailable", provider },
+            {
+              error: "embed_provider_failed",
+              detail: e?.message ?? "embedding unavailable",
+              provider,
+              ...(refunded ? { refunded: true, credits: refundedState } : {}),
+            },
             502,
             cors
           );
         }
+      }
+
+      // POST /api/rewrite {query, history?, followUp?} → {standalone, queries, terms}
+      // Понимание запроса для ретривала: без списания, D1-кэш 30 дней, троттл 60/час на устройство.
+      if (url.pathname === "/api/rewrite" && req.method === "POST") {
+        const body = (await req.json()) as any;
+        const query = String(body?.query ?? "").trim().slice(0, 400);
+        if (!query) return json({ error: "query required" }, 400, cors);
+        const deviceId = req.headers.get("X-Device-Id") || req.headers.get("CF-Connecting-IP") || "anon";
+        const now = Date.now();
+        const cur = rewriteThrottle.get(deviceId);
+        if (!cur || now - cur.at > 3600_000) rewriteThrottle.set(deviceId, { at: now, n: 1 });
+        else if (cur.n >= 60) {
+          return json({ error: "rewrite_limit", detail: "Лимит переформулировок (60/час) — обновится позже" }, 429, cors);
+        } else cur.n++;
+        const history = Array.isArray(body?.history)
+          ? body.history
+              .slice(-2)
+              .map((h: any) => ({ q: String(h?.q ?? "").slice(0, 300), a: String(h?.a ?? "").slice(0, 500) }))
+          : [];
+        try {
+          const out = await rewriteSmart(env, query, { history, followUp: body?.followUp === true });
+          if (body?.debug === true) return json({ ...out, raw: (out as any).__raw ?? "" }, 200, cors);
+          return json(out, 200, cors);
+        } catch (e: any) {
+          console.error("rewrite failed", e?.message ?? e);
+          return json({ standalone: query, queries: [], terms: [] }, 200, cors);
+        }
+      }
+
+      // POST /api/eval/rerank {query, texts[]} → {order[], model} — только с X-Eval-Token (offline-eval).
+      if (url.pathname === "/api/eval/rerank" && req.method === "POST") {
+        if (!env.EVAL_TOKEN || req.headers.get("X-Eval-Token") !== env.EVAL_TOKEN) {
+          return json({ error: "not_found" }, 404, cors);
+        }
+        const body = (await req.json()) as any;
+        const query = String(body?.query ?? "").slice(0, 400);
+        const texts: string[] = (Array.isArray(body?.texts) ? body.texts : [])
+          .slice(0, 32)
+          .map((t: any) => String(t ?? ""));
+        if (!query || !texts.length) return json({ error: "query and texts required" }, 400, cors);
+        const rr = await rerankContexts(
+          env,
+          query,
+          texts,
+          Math.min(8, texts.length),
+          typeof body?.provider === "string" && body.provider ? body.provider : undefined
+        );
+        return json({ order: rr.order, model: rr.model, errors: rr.errors }, 200, cors);
       }
 
       // POST /api/voice (multipart audio) → {text} через Groq Whisper.
@@ -1506,8 +3148,13 @@ export default {
       if (url.pathname === "/api/me" && req.method === "GET") {
         const auth = req.headers.get("Authorization");
         if (!auth?.startsWith("Bearer ")) return json({ error: "unauthorized" }, 401, cors);
-        const payload = await verifyJwt(auth.slice(7), env.JWT_SECRET);
-        if (!payload) return json({ error: "unauthorized" }, 401, cors);
+        const { payload, reason } = await verifyJwtWithReason(auth.slice(7), env.JWT_SECRET);
+        if (!payload) {
+          return json({ error: reason === "expired" ? "token_expired" : "invalid_token" }, 401, {
+            ...cors,
+            "WWW-Authenticate": 'Bearer error="invalid_token"',
+          });
+        }
         await ensureUserNameColumns(env);
   const { subject, isUser } = await subjectFromRequest(env, req);
   const credits = await getCreditsState(env, subject, isUser);
@@ -1649,10 +3296,28 @@ export default {
 
         const pack = PACKS[sku];
         const plan = PLANS[sku.replace(/^sub_/, "")];
-        if (!pack && !plan) return json({ error: "unknown_sku" }, 400, cors);
+        if (!pack && !plan) return json({ error: "unknown_sku", detail: `Неизвестный тариф: ${sku}` }, 400, cors);
         if (plan && !payload.uid) return json({ error: "unauthorized" }, 401, cors);
 
         const now = new Date();
+        // Даунгрейд на Free: отменяем подписку, план сразу становится free.
+        if (sku === "free" || sku === "sub_free") {
+          await env.DB.batch([
+            env.DB.prepare("DELETE FROM subscriptions WHERE subject=?").bind(subject),
+            env.DB.prepare("INSERT INTO purchases (id, subject, sku, credits, status, created_at) VALUES (?, ?, 'free', 0, 'demo', ?)").bind(
+              crypto.randomUUID(),
+              subject,
+              now.toISOString()
+            ),
+            env.DB.prepare("INSERT INTO ledger (subject, delta, kind, meta, created_at) VALUES (?, 0, 'subscription', ?, ?)").bind(
+              subject,
+              JSON.stringify({ sku: "free", downgrade: true, demo: true }),
+              now.toISOString()
+            ),
+          ]);
+          const state = await getCreditsState(env, subject, !!payload.uid);
+          return json({ ok: true, demo: true, ...state }, 200, cors);
+        }
         if (pack) {
           await env.DB.batch([
             env.DB.prepare(
@@ -1712,27 +3377,23 @@ export default {
 
         const { subject, isUser } = await subjectFromRequest(env, req);
         const lim = await getLimits(env);
+        const tAsk0 = Date.now();
+
         const cost = isFollowUp ? lim.followup : lim.deep;
         const spendKind = isFollowUp ? "spend_followup" : "spend_deep";
         const refundKind = isFollowUp ? "refund_followup" : "refund_deep";
-        const spend = await chargeHybrid(env, subject, isUser, cost, spendKind);
-        if (!spend.ok || !spend.split) {
-          return json(
-            { error: "insufficient_credits", detail: isFollowUp ? "Недостаточно кредитов для уточняющего вопроса" : "Недостаточно кредитов для глубокого поиска", ...spend.state, need: spend.need },
-            402,
-            cors
-          );
-        }
-        const state = await getCreditsState(env, subject, isUser);
-        const tAsk0 = Date.now();
 
-        // Кэш ответов: повторный вопрос — без LLM и эмбеддингов.
-        // Смотрим после списания (хит списывается как обычно), уточнения не кэшируем.
+        // Кэш ответов — ДО списания: повторный вопрос бесплатен
+        // (cached:true, free:true). Тег сборки в ключе: после обновления норм старые ответы не отдаём.
         const askMode = body.mode === "deep" ? "deep" : "fast";
         let cacheHash = "";
         if (!isFollowUp) {
           try {
-            cacheHash = await askCacheKey(query, askMode);
+            let buildTag = "none";
+            try {
+              buildTag = (await getIndexManifest(env)).builtAt || "none";
+            } catch {}
+            cacheHash = await askCacheKey(query, askMode, buildTag);
           } catch {
             cacheHash = "";
           }
@@ -1758,15 +3419,9 @@ export default {
                     cachedSources = [];
                   }
                   if (cached) {
-                    try {
-                      await env.DB.prepare(
-                        "UPDATE ledger SET meta=? WHERE id=(SELECT MAX(id) FROM ledger WHERE subject=? AND kind=?)"
-                      )
-                        .bind(JSON.stringify({ split: spend.split, llm: "cache" }), subject, spendKind)
-                        .run();
-                    } catch {}
+                    const cachedState = await getCreditsState(env, subject, isUser);
                     return json(
-                      { answer: cached, provider: "cache", sources: cachedSources || [], credits: state, took_ms: Date.now() - tAsk0, cached: true },
+                      { answer: cached, provider: "cache", sources: cachedSources || [], credits: cachedState, took_ms: Date.now() - tAsk0, cached: true, free: true },
                       200,
                       cors
                     );
@@ -1781,44 +3436,128 @@ export default {
           }
         }
 
+        const spend = await chargeHybrid(env, subject, isUser, cost, spendKind);
+        if (!spend.ok || !spend.split) {
+          return json(
+            { error: "insufficient_credits", detail: isFollowUp ? "Недостаточно кредитов для уточняющего вопроса" : "Недостаточно кредитов для глубокого поиска", ...spend.state, need: spend.need },
+            402,
+            cors
+          );
+        }
+        const state = await getCreditsState(env, subject, isUser);
+
+        // Карточки значений: фактоидный вопрос с заземлёнными фактами — БЕЗ LLM и БЕСПЛАТНО.
+        // Списание выше тут же возвращаем: это локальные данные, а не работа модели.
+        // Незаземлённые строки карточек (редкость) — в LLM-промпт как проверенные значения.
+        let valueLines: string[] = [];
+        let vcScored: Array<{ hit: ValueCardHit; rel: number; ord: number; docHit: boolean; paramOrig: boolean; num: number }> = [];
+        if (!isFollowUp) {
+          try {
+            const vc = await tryValuesAnswer(env, query);
+            if (vc?.answer) {
+              let valuesState = state;
+              try {
+                await refundCharge(env, subject, isUser, cost, spend.split, refundKind);
+                valuesState = await getCreditsState(env, subject, isUser);
+              } catch {}
+              return json(
+                {
+                  answer: vc.answer, provider: "values", sources: vc.sources,
+                  credits: valuesState, took_ms: Date.now() - tAsk0, free: true,
+                },
+                200,
+                cors
+              );
+            }
+            if (vc?.lines?.length) valueLines = vc.lines.slice(0, 4);
+            if (vc?.scored?.length) vcScored = vc.scored;
+          } catch {}
+        }
+
         const idx = await loadIndex(env);
+        // Роутер сложности: глубина контекста и лимит токенов по типу вопроса.
+        const askRoute = classifyAsk(query, isFollowUp);
+        const contextTopN = askRoute === "complex" ? 8 : askRoute === "simple" ? 4 : 6;
         let ids: number[];
+        let rerankModel = "none";
+        let candidatesCount = 0;
         try {
-          if (Array.isArray(body.chunkIds) && body.chunkIds.length) {
-            ids = body.chunkIds.map(Number).filter((i: number) => i >= 0 && i < idx.count).slice(0, 5);
+          // Клиент присылает до 24 кандидатов (hybrid top); cross-encoder выбирает лучшие top-N.
+          const candRaw = Array.isArray(body.candidates) && body.candidates.length ? body.candidates : body.chunkIds;
+          if (Array.isArray(candRaw) && candRaw.length) {
+            ids = candRaw.map(Number).filter((i: number) => i >= 0 && i < idx.count).slice(0, 32);
           } else {
-            ids = await vectorTopK(env, query, body.mode === "deep" ? 5 : 3);
+            ids = await vectorTopK(env, query, 12);
+          }
+          candidatesCount = ids.length;
+          if (ids.length > contextTopN) {
+            let rerankOn = true;
+            try {
+              const { values } = await getSettings(env);
+              rerankOn = settingInt(values, "smart_rerank", "1") === 1;
+            } catch {}
+            if (rerankOn) {
+              const texts = ids.map((i) => String(idx.chunks[i]?.t ?? ""));
+              const rr = await rerankContexts(env, query, texts, contextTopN);
+              if (rr.order.length) ids = rr.order.map((k) => ids[k]);
+              rerankModel = rr.model;
+            } else {
+              ids = ids.slice(0, contextTopN);
+            }
+          }
+          // Numeric-запрос: лучший values-факт принудительно в контекст (бесплатно).
+          // Иначе top-3 вектора может оставить только таблицу-ловушку (А.1 со строками
+          // 6/7), а правильная норма («не выше пятого») до LLM не дойдёт вообще.
+          if (vQueryNumbersFull(query).length && vcScored.length) {
+            const bestV = [...vcScored].sort(
+              (a, b) => Number(b.docHit) - Number(a.docHit) || b.rel - a.rel
+            )[0];
+            const vi = bestV?.hit?.fact?.i;
+            if (Number.isInteger(vi) && (vi as number) >= 0 && (vi as number) < idx.count && !ids.includes(vi as number)) {
+              ids = [...ids, vi as number].slice(0, contextTopN + 1);
+            }
           }
           const rawContexts = ids.map((i) => idx.chunks[i]?.t).filter(Boolean);
           if (!rawContexts.length) {
-            refundCharge(env, subject, isUser, cost, spend.split, refundKind).catch(() => {});
-            return json({ answer: { answer: "Индекс пуст.", is_grounded: false }, took_ms: 0, ...state }, 200, cors);
+            let emptyState = state;
+            try {
+              await refundCharge(env, subject, isUser, cost, spend.split, refundKind);
+              emptyState = await getCreditsState(env, subject, isUser);
+            } catch {}
+            return json({ answer: { answer: "Индекс пуст.", is_grounded: false }, took_ms: 0, credits: emptyState, refunded: true }, 200, cors);
           }
           // Чистим оглавления/линейки до промпта: модель не должна путать номер страницы со значением
           const contexts = rawContexts.map(sanitizeContextText).filter(Boolean);
           if (!contexts.length) {
-            refundCharge(env, subject, isUser, cost, spend.split, refundKind).catch(() => {});
-            return json({ answer: { answer: "В доступной нормативной базе точного требования не найдено.", quote: "", paragraph: "", is_grounded: false }, took_ms: 0, ...state }, 200, cors);
+            let noCtxState = state;
+            try {
+              await refundCharge(env, subject, isUser, cost, spend.split, refundKind);
+              noCtxState = await getCreditsState(env, subject, isUser);
+            } catch {}
+            return json({ answer: { answer: "В доступной нормативной базе точного требования не найдено.", quote: "", paragraph: "", is_grounded: false }, took_ms: 0, credits: noCtxState, refunded: true }, 200, cors);
           }
           // Табличные контексты помечаем: первое число строки — номер строки, не значение
           const promptContexts = contexts.map((t, k) => {
             const ty = (idx.chunks[ids[k]] as any)?.ty;
             return isTableLike(t, ty) ? `${TABLE_NOTE}\n${t}` : t;
           });
-          // paragraph первого чанка — надёжный фолбэк, если модель вернёт мусор вида "[1]"
+          // paragraph первого чанка больше не используется как кросс-чаночный фолбэк
+          // (см. атомарную атрибуцию ниже) — переменная оставлена для отладки экстрактива.
           const firstChunk = idx.chunks[ids[0]];
-          const firstChunkPara = String(firstChunk?.p ?? "") || extractTableTitle(rawContexts[0] ?? "");
+          void firstChunk;
 
-          const maxTokens = body.mode === "deep" ? 1000 : 800;
+          const maxTokens = askRoute === "complex" ? 1200 : askRoute === "simple" ? 600 : body.mode === "deep" ? 1000 : 800;
           const t0 = Date.now();
           let answer: any;
           let provider: LlmProvider = "groq";
           let collapseWhy = "";
           try {
-            ({ answer, provider } = await askGroq(env, query, promptContexts, maxTokens, isFollowUp ? history : undefined));
+            ({ answer, provider } = await askGroq(env, query, promptContexts, maxTokens, isFollowUp ? history : undefined, valueLines));
           } catch (e: any) {
             // вся LLM-цепочка легла → экстрактивный ответ из цитат (бесконечно, без ИИ)
-            collapseWhy = dominantCause(((e as any)?.llmCauses ?? { rate429: 0, badJson: 0, other: 0 }) as LlmCauses);
+            collapseWhy = (e as any)?.budgetExhausted
+              ? "budgets"
+              : dominantCause(((e as any)?.llmCauses ?? { rate429: 0, badJson: 0, other: 0 }) as LlmCauses);
             if ((await llmEnabled(env, "llm_extractive")) && contexts.length) {
               const first = idx.chunks[ids[0]];
               const top = contexts.slice(0, 3).map((c) => c.slice(0, 400));
@@ -1836,25 +3575,82 @@ export default {
               throw e;
             }
           }
-          if (provider !== "groq") {
-            // метим не-Groq путь в ledger.meta (редкий путь — +1 write только тогда)
+          // paragraph от модели валидируем + атомарная атрибуция одной цепочкой:
+          // quote → чанк (sourceIdx модели или поиск по контекстам) → paragraph/page/sources
+          // только из ЭТОГО чанка. Смеси «п.4.4.1.37 + стр.101 + цитата таблицы» больше нет.
+          let att = attributeAnswer(answer, promptContexts, rawContexts, ids, idx.chunks);
+          answer = att.answer;
+          let skipCache = att.skipCache;
+          let finalAnswer = { ...answer, is_grounded: answer.extractive ? true : verifyGrounded(answer, answer.extractive ? promptContexts : [promptContexts[att.claimIdx]]) };
+          let finalSources = att.sources ?? ids.map((i) => ({ i, d: idx.chunks[i].d, p: idx.chunks[i].p, pg: idx.chunks[i].pg }));
+          // Второй проход: первый ответ — «не найдено» → перечитываем контекст с мягкой инструкцией.
+          let secondPassUsed = false;
+          if (!answer.extractive && !finalAnswer.is_grounded) {
+            let spOn = true;
             try {
-              await env.DB.prepare(
-                "UPDATE ledger SET meta=? WHERE id=(SELECT MAX(id) FROM ledger WHERE subject=? AND kind=?)"
-              )
-                .bind(JSON.stringify({ split: spend.split, llm: provider, ...(provider === "extractive" && collapseWhy ? { why: collapseWhy } : {}) }), subject, spendKind)
-                .run();
+              const { values } = await getSettings(env);
+              spOn = settingInt(values, "smart_second_pass", "1") === 1;
+            } catch {}
+            if (spOn && !isFollowUp) {
+              secondPassUsed = true;
+              try {
+                const retry = await askGroq(env, query, promptContexts, maxTokens, undefined, valueLines, true);
+                const att2 = attributeAnswer(retry.answer, promptContexts, rawContexts, ids, idx.chunks);
+                const g2 = retry.answer.extractive ? true : verifyGrounded(att2.answer, [promptContexts[att2.claimIdx]]);
+                if (g2) {
+                  answer = att2.answer;
+                  provider = retry.provider;
+                  skipCache = att2.skipCache;
+                  finalAnswer = { ...att2.answer, is_grounded: true };
+                  finalSources = att2.sources ?? finalSources;
+                }
+              } catch (e: any) {
+                console.error(`[second-pass] ${String(e?.message ?? e).slice(0, 120)}`);
+              }
+            }
+          }
+          // Детерминированный gate «вердикт vs числа»: противоречие лимиту → override шаблоном.
+          let vOverridden = false;
+          if (!answer.extractive && finalAnswer.is_grounded) {
+            try {
+              const gate = vNumericGate({
+                query, answerText: String(finalAnswer.answer ?? ""),
+                scored: vcScored, promptContexts, rawContexts, ids, chunks: idx.chunks,
+                docs: (await loadValues(env))?.docs ?? [],
+              });
+              if (gate) {
+                finalAnswer = {
+                  ...finalAnswer,
+                  answer: gate.answer,
+                  normative_basis: gate.cite.docNumber || finalAnswer.normative_basis || "",
+                  paragraph: gate.cite.p || "",
+                  page: gate.cite.pg,
+                  quote: gate.cite.quote || finalAnswer.quote || "",
+                  numeric_override: true,
+                };
+                finalSources = [{ i: gate.cite.i, d: gate.cite.d, p: gate.cite.p, pg: gate.cite.pg }];
+                vOverridden = true;
+              }
             } catch {}
           }
-          // paragraph от модели валидируем: мусор вида "[1]" заменяем номером пункта первого чанка
-          if (!answer.extractive) {
-            const cleaned = cleanParagraphValue(answer.paragraph);
-            answer = { ...answer, paragraph: cleaned || firstChunkPara };
+          // Санитизация ложного «Да —»/«Нет —» на фактоидах: вопрос не про разрешение,
+          // а LLM начал с вердикта → срезаем префикс, число остается hero-кандидатом.
+          // Gate-override выше уже отработал только для permission-вопросов, его не трогаем.
+          if (!answer.extractive && !vOverridden && !isPermissionQuestion(query) && typeof finalAnswer.answer === "string") {
+            const stripped = stripLeadingYesNo(finalAnswer.answer);
+            if (stripped !== finalAnswer.answer) finalAnswer = { ...finalAnswer, answer: stripped };
           }
-          const finalAnswer = { ...answer, is_grounded: answer.extractive ? true : verifyGrounded(answer, promptContexts) };
-          const finalSources = ids.map((i) => ({ i, d: idx.chunks[i].d, p: idx.chunks[i].p, pg: idx.chunks[i].pg }));
-          // Кэш: только не-экстрактив (коллапсы не кэшируем — пулы могут ожить к повтору).
-          if (!isFollowUp && cacheHash && !answer.extractive) {
+          // Метрика роутера/rerank/второго прохода в ledger.meta (+1 write, дёшево и информативно).
+          try {
+            await env.DB.prepare(
+              "UPDATE ledger SET meta=? WHERE id=(SELECT MAX(id) FROM ledger WHERE subject=? AND kind=?)"
+            )
+              .bind(JSON.stringify({ split: spend.split, llm: provider, route: askRoute, cands: candidatesCount, rerank: rerankModel, sp: secondPassUsed ? 1 : 0, g: finalAnswer.is_grounded ? 1 : 0, ...(provider === "extractive" && collapseWhy ? { why: collapseWhy } : {}) }), subject, spendKind)
+              .run();
+          } catch {}
+          // Кэш: только не-экстрактив и только чистая атрибуция (коллапсы и
+          // отремонтированные цитаты не кэшируем — иначе яд живёт 48ч).
+          if (!isFollowUp && cacheHash && !answer.extractive && !skipCache) {
             try {
               await env.DB.prepare(
                 "INSERT INTO ask_cache (hash, query_norm, mode, answer_json, sources_json, provider, grounded, created_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(hash) DO UPDATE SET answer_json=excluded.answer_json, sources_json=excluded.sources_json, provider=excluded.provider, grounded=excluded.grounded, created_at=excluded.created_at"
@@ -1884,8 +3680,10 @@ export default {
             cors
           );
         } catch (e: any) {
-          // внутренняя ошибка — возвращаем списанные кредиты
-          refundCharge(env, subject, isUser, cost, spend.split, refundKind).catch(() => {});
+          // внутренняя ошибка — возвращаем списанные кредиты (await: баланс в ответе уже свежий)
+          try {
+            await refundCharge(env, subject, isUser, cost, spend.split, refundKind);
+          } catch {}
           throw e;
         }
       }
@@ -2245,6 +4043,42 @@ export default {
           counts.forEach((r: any, i: number) => {
             tables[TABLES[i]] = r.results?.[0]?.c ?? 0;
           });
+          // Состояние LLM-пула: бюджеты/брейкеры на сегодня (для Admiral: видно, кто в дауне).
+          let llmPool: Array<{ id: string; cap: number; used: number; down: boolean }> = [];
+          try {
+            const [hVals, hStates] = await Promise.all([getSettings(env), getLlmBudgetStates(env)]);
+            const hNow = Date.now();
+            const agg = new Map<string, { used: number; down: boolean }>();
+            for (const [key, st] of hStates) {
+              const pid = key.split("\n")[0];
+              const cur = agg.get(pid) ?? { used: 0, down: false };
+              cur.used += st.used;
+              if (st.downUntil > hNow) cur.down = true;
+              agg.set(pid, cur);
+            }
+            llmPool = Object.keys(LLM_BUDGET_DEFAULTS).map((pid) => ({
+              id: pid,
+              cap: llmBudgetCap(hVals.values ?? {}, pid),
+              used: agg.get(pid)?.used ?? 0,
+              down: agg.get(pid)?.down ?? false,
+            }));
+          } catch {}
+          // Смарт-метрики за сутки: grounded/not-found, второй проход, rerank-звено, кэш.
+          let smart: Record<string, number> = {};
+          try {
+            const row = await env.DB.prepare(
+              `SELECT COUNT(*) AS total,
+                COALESCE(SUM(CASE WHEN meta LIKE '%"g":1%' THEN 1 ELSE 0 END),0) AS grounded,
+                COALESCE(SUM(CASE WHEN meta LIKE '%"g":0%' THEN 1 ELSE 0 END),0) AS not_found,
+                COALESCE(SUM(CASE WHEN meta LIKE '%"sp":1%' THEN 1 ELSE 0 END),0) AS second_pass,
+                COALESCE(SUM(CASE WHEN meta LIKE '%"rerank":"voyage-rerank"%' THEN 1 ELSE 0 END),0) AS rr_voyage,
+                COALESCE(SUM(CASE WHEN meta LIKE '%"rerank":"cohere-rerank"%' THEN 1 ELSE 0 END),0) AS rr_cohere,
+                COALESCE(SUM(CASE WHEN meta LIKE '%"rerank":"llm-rerank"%' THEN 1 ELSE 0 END),0) AS rr_llm,
+                COALESCE(SUM(CASE WHEN meta LIKE '%"llm":"cache"%' THEN 1 ELSE 0 END),0) AS cache
+               FROM ledger WHERE kind LIKE 'spend_%' AND created_at >= datetime('now','-1 day')`
+            ).first<Record<string, number>>();
+            if (row) smart = row;
+          } catch {}
           return json(
             {
               now: new Date().toISOString(),
@@ -2259,6 +4093,8 @@ export default {
               },
               r2_norms: !!env.NORMS,
               tables,
+              llm: llmPool,
+              smart,
               billing: { plans: PLANS, packs: PACKS },
             },
             200,

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, createContext, useContext, useRef } from 'react'
+import { Icon } from './Icon'
 
 type ToastVariant = 'success' | 'error' | 'info' | 'warning'
 
@@ -56,7 +57,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         {toasts.map(t => (
           <div
             key={t.id}
-            className={`pointer-events-auto px-4 py-3 rounded-2xl shadow-xl text-sm flex items-center gap-3 max-w-[92vw] animate-dropdown ${variantStyles[t.variant]}`}
+            className={`pointer-events-auto px-4 py-3 rounded-xl shadow-lg text-sm flex items-center gap-3 max-w-[92vw] animate-dropdown ${variantStyles[t.variant]}`}
           >
             <span className="truncate">{t.message}</span>
             <button
@@ -64,7 +65,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
               className="text-white/60 hover:text-white shrink-0"
               aria-label="Закрыть"
             >
-              ✕
+              <Icon name="close" size={14} />
             </button>
           </div>
         ))}

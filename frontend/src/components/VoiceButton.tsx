@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { useVoiceSearch } from '../hooks/useVoiceSearch'
 import { useToast } from './Toast'
+import { Icon } from './Icon'
 
 interface VoiceButtonProps {
   onTranscript: (text: string) => void
@@ -23,37 +24,22 @@ export function VoiceButton({ onTranscript, className = '' }: VoiceButtonProps) 
   if (!isSupported) return null
 
   const isListening = state === 'listening'
+  const isProcessing = (state as string) === 'processing'
 
   return (
     <button
       type="button"
       onClick={toggleListening}
-      title={isListening ? 'Остановить запись' : 'Голосовой поиск'}
+      disabled={isProcessing}
+      title={isListening ? 'Остановить запись' : isProcessing ? 'Распознаём через резерв…' : 'Голосовой поиск'}
       aria-label={isListening ? 'Остановить запись' : 'Голосовой поиск'}
-      className={`relative w-10 h-10 rounded-xl flex items-center justify-center transition shrink-0 ${
+      className={`relative w-10 h-10 max-md:w-9 max-md:h-9 rounded-xl flex items-center justify-center transition shrink-0 ${
         isListening
-          ? 'bg-red-500 text-white animate-pulse shadow-lg shadow-red-500/30'
-          : 'bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-slate-700'
+          ? 'bg-red-500 text-white animate-pulse'
+          : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 hover:text-slate-700 dark:hover:text-slate-200'
       } ${className}`}
     >
-      {isListening ? (
-        // Recording icon — waveform bars
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-          <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
-          <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-          <line x1="12" x2="12" y1="19" y2="22" />
-          {/* Animated wave indicators */}
-          <path d="M1 12c2-2 4-3 5-3" opacity="0.5" />
-          <path d="M23 12c-2-2-4-3-5-3" opacity="0.5" />
-        </svg>
-      ) : (
-        // Microphone icon
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-          <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
-          <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-          <line x1="12" x2="12" y1="19" y2="22" />
-        </svg>
-      )}
+      <Icon name="mic" size={19} strokeWidth={2} />
       {isListening && (
         <span className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full border-2 border-white animate-ping" />
       )}

@@ -47,3 +47,23 @@ caddy_config/
 # Wrangler
 .wrangler/
 frontend/.wrangler/
+worker/.dev.vars
+
+# Локальный кэш эмбеддингов для пересборок индекса (--reuse-vectors)
+.index_cache/
+
+# offline eval
+scripts/eval/.eval_token
+scripts/eval/embed_cache.json
+scripts/eval/rewrite_cache.json
+
+# Корпус нормативки (тяжёлый, качается по norms_refresh.sh) — метаданные в git
+norms/*
+!norms/meta.json
+
+# Рабочий мусор / черновики
+assets/
+.zcode/
+worker/tmp-tail/
+*.tsbuildinfo
+logo_snake*.png

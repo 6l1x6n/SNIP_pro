@@ -1,6 +1,6 @@
 #!/bin/bash
-# build_when_ready.sh — дозорный цикл: ждёт сброса дневной квоты Gemini,
-# затем пересобирает индекс из «СНиП РК» и деплоит на Cloudflare Pages.
+# build_when_ready.sh — дозорный цикл: ждёт сброса дневной квоты провайдера эмбеддингов,
+# затем пересобирает индекс из norms/ и деплоит на Cloudflare Pages.
 # Лог: /tmp/snip_build.log   Остановить: pkill -f build_when_ready.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -16,7 +16,7 @@ while true; do
     echo "✅ Индекс собран ($(date '+%H:%M:%S')) — деплой на Pages…" | tee -a /tmp/snip_build.log
     if ./scripts/rebuild.sh --skip-build >> /tmp/snip_build.log 2>&1; then
       echo "🚀 ГОТОВО ($(date '+%d.%m %H:%M:%S')) — проверяйте https://snippy-llm.pages.dev" | tee -a /tmp/snip_build.log
-      osascript -e 'display notification "Индекс «СНиП РК» собран и задеплоен!" with title "SNIP_pro"' 2>/dev/null
+      osascript -e 'display notification "Индекс norms/ собран и задеплоен!" with title "SNIP_pro"' 2>/dev/null
       exit 0
     fi
     echo "⚠️ Деплой упал — см. конец /tmp/snip_build.log" | tee -a /tmp/snip_build.log

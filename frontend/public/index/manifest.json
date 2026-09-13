@@ -1,14 +1,23 @@
 {
- "version": 1,
- "builtAt": "2026-08-25T14:08:47Z",
+ "version": 2,
+ "builtAt": "2026-09-09T21:07:54Z",
  "dim": 1024,
- "count": 3786,
+ "count": 40931,
  "quantization": "int8-per-vector",
- "provider": "jina",
- "model": "jina-embeddings-v3",
+ "provider": "cohere",
+ "model": "embed-multilingual-v3.0",
  "bm25": {
   "k1": 1.2,
   "b": 0.75
  },
- "rrfK": 60
+ "rrfK": 60,
+ "shards": {
+  "vectors": 11,
+  "chunks": 8
+ },
+ "values": {
+  "version": 1,
+  "count": 7644,
+  "file": "values.json"
+ }
 }

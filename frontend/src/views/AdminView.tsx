@@ -9,6 +9,8 @@ import {
 } from '../hooks/useAdmin'
 import { ModelUsageCard } from '../components/admin/ModelUsage'
 import { QuotaCard, QUOTA_FIELDS, CAP_FIELDS } from '../components/admin/QuotaEditor'
+import { Icon } from '../components/Icon'
+import { ListRow } from '../components/ListRow'
 
 const PROVIDER_LABEL: Record<string, string> = {
   gemini: 'Gemini',
@@ -94,18 +96,18 @@ function ChainRows({ stats, settings, onToggle }: { stats: any; settings: any; o
         const on = r.key === null ? true : String(vals[r.key] ?? (r.key === 'llm_zen' ? '0' : '1')) === '1'
         return (
           <div key={r.n} className="flex items-center gap-2 text-xs py-1.5 border-b border-slate-100 dark:border-slate-800 last:border-0">
-            <span className="text-slate-400 tabular-nums w-4">{r.n}</span>
+            <span className="text-slate-400 tabular-nums w-4 shrink-0">{r.n}</span>
             <span className={`w-2 h-2 rounded-full shrink-0 ${on ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'}`} />
-            <div className="min-w-0">
-              <div className="font-medium text-slate-700 dark:text-slate-200">{r.label}</div>
-              <div className="text-slate-400 truncate">{r.hint}</div>
+            <div className="flex-1 min-w-0">
+              <div className="font-medium text-slate-700 dark:text-slate-200 truncate" title={r.label}>{r.label}</div>
+              <div className="text-slate-400 truncate" title={typeof r.hint === 'string' ? r.hint : undefined}>{r.hint}</div>
             </div>
-            <span className="ml-auto tabular-nums text-slate-500 shrink-0">{r.count === null ? '—' : `${r.count}×`}</span>
+            <span className="ml-auto tabular-nums text-slate-500 shrink-0 w-[52px] text-right">{r.count === null ? '—' : `${r.count}×`}</span>
             {r.key && (
               <button
                 onClick={() => onToggle(r.key as string, on ? 0 : 1)}
                 title={on ? 'Выключить звено' : 'Включить звено'}
-                className={`px-2 py-0.5 rounded-full text-[11px] border shrink-0 ${on ? 'border-emerald-200 dark:border-emerald-900 text-emerald-600' : 'border-slate-200 dark:border-slate-700 text-slate-400'}`}
+                className={`px-2 py-0.5 rounded-full text-[11px] border shrink-0 min-w-[52px] inline-flex items-center justify-center ${on ? 'border-emerald-200 dark:border-emerald-900 text-emerald-600' : 'border-slate-200 dark:border-slate-700 text-slate-400'}`}
               >
                 {on ? 'вкл' : 'выкл'}
               </button>
@@ -228,11 +230,11 @@ export function AdminView({ user }: { user: any }) {
       <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
         <div>
           <h2 className="text-lg font-semibold text-slate-900 dark:text-white flex items-center gap-2">
-            Админка <span className="text-[11px] px-2 py-0.5 rounded-full bg-violet-100 dark:bg-violet-950 border border-violet-200 dark:border-violet-900 text-violet-700 dark:text-violet-300">★ только админы</span>
+            Админка <span className="badge border-violet-200 dark:border-violet-900 bg-violet-50 dark:bg-violet-950 text-violet-700 dark:text-violet-300"><Icon name="shield" size={11} /> только админы</span>
           </h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Статистика • квоты ИИ • пользователи • логи — без автообновления (экономим D1)</p>
         </div>
-        <button onClick={() => { loadStats(); if (section === 'users') loadUsers(uOff); if (section === 'activity' || section === 'errors') loadActs(aOff, kinds); if (section === 'quotas' || section === 'params') loadSettings(); if (section === 'params') loadHealth(); if (section === 'feedback') loadFb(fbOff, fbRating) }} className="px-4 py-2 bg-white dark:bg-slate-900 dark:text-white border border-slate-200 dark:border-slate-700 rounded-xl text-sm hover:bg-slate-50 dark:hover:bg-slate-800 transition">Обновить</button>
+        <button onClick={() => { loadStats(); if (section === 'users') loadUsers(uOff); if (section === 'activity' || section === 'errors') loadActs(aOff, kinds); if (section === 'quotas' || section === 'params') loadSettings(); if (section === 'params') loadHealth(); if (section === 'feedback') loadFb(fbOff, fbRating) }} className="btn btn-md btn-secondary py-2"><Icon name="refresh" size={14} /> Обновить</button>
       </div>
 
       {error && <div className="bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 text-red-700 dark:text-red-300 rounded-xl p-3 text-sm mb-4">{error}</div>}
@@ -246,7 +248,7 @@ export function AdminView({ user }: { user: any }) {
             </div>
             <nav className="p-2">
               {SECTIONS.map((s) => (
-                <button key={s.id} onClick={() => setSection(s.id)} className={`w-full text-left px-3 py-2.5 rounded-xl text-sm transition ${section === s.id ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-medium' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'}`}>{s.label}</button>
+                <button key={s.id} onClick={() => setSection(s.id)} className={`w-full text-left px-3 py-2.5 rounded-xl text-sm transition ${section === s.id ? 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white font-medium' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'}`}>{s.label}</button>
               ))}
             </nav>
           </div>
@@ -266,7 +268,7 @@ export function AdminView({ user }: { user: any }) {
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                 <Card title="Пользователей" value={String(stats.users.total)} sub={`+${stats.users.fresh} за период`} />
                 <Card title="Активность/день (макс)" value={String(Math.max(0, ...(stats.usage_by_day || []).map((x: any) => x.n)) || '—')} sub="уникальных субъектов" />
-                <Card title="Потрачено за период" value={`${(stats.usage_by_day || []).reduce((s: number, x: any) => s + x.s, 0)}⚡`} sub="дневные лимиты" />
+                <Card title="Потрачено за период" value={String((stats.usage_by_day || []).reduce((s: number, x: any) => s + x.s, 0))} sub="кредитов • дневные лимиты" />
                 <Card title="Объяснения" value={`${stats.explain.used}/${stats.explain.cap * days}`} sub={`кэш: ${stats.explain.cached}`} />
               </div>
               <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
@@ -276,7 +278,7 @@ export function AdminView({ user }: { user: any }) {
                   <div key={x.d} className="flex items-center gap-3 text-xs py-1.5 border-b border-slate-100 dark:border-slate-800 last:border-0">
                     <span className="text-slate-500 tabular-nums w-24">{x.d}</span>
                     <span className="text-slate-700 dark:text-slate-200">{x.n} польз.</span>
-                    <span className="text-slate-400">{x.s}⚡</span>
+                    <span className="text-slate-400 inline-flex items-center gap-0.5">{x.s}<Icon name="bolt" size={10} /></span>
                   </div>
                 ))}
               </div>
@@ -285,7 +287,7 @@ export function AdminView({ user }: { user: any }) {
 
           {section === 'quotas' && stats && (
             <>
-              <div className="text-sm font-semibold text-slate-900 dark:text-white">Лимиты и стоимость <span className="font-normal text-xs text-slate-400">— нажмите ✎ чтобы изменить</span></div>
+              <div className="text-sm font-semibold text-slate-900 dark:text-white">Лимиты и стоимость <span className="font-normal text-xs text-slate-400">— редактируется по клику</span></div>
               <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
                 {QUOTA_FIELDS.map((f) => (
                   setVals[f.key] !== undefined && (
@@ -347,8 +349,8 @@ export function AdminView({ user }: { user: any }) {
               <div className="flex flex-wrap items-center gap-2 mb-3">
                 <div className="text-sm font-semibold text-slate-900 dark:text-white">Отзывы под ответами</div>
                 {fbAgg && fbAgg.total > 0 && (
-                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-900 text-emerald-700 dark:text-emerald-300">
-                    👍 {fbAgg.pos} / 👎 {fbAgg.neg} · {Math.round((fbAgg.pos / fbAgg.total) * 100)}% положительных
+                  <span className="badge border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300">
+                    <Icon name="thumbUp" size={11} /> {fbAgg.pos} / <Icon name="thumbDown" size={11} /> {fbAgg.neg} · {Math.round((fbAgg.pos / fbAgg.total) * 100)}% положительных
                   </span>
                 )}
                 <div className="ml-auto flex gap-1.5">
@@ -358,32 +360,40 @@ export function AdminView({ user }: { user: any }) {
                       onClick={() => { setFbRating(r); loadFb(0, r) }}
                       className={`px-3 py-1.5 rounded-full text-xs border transition ${fbRating === r ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400'}`}
                     >
-                      {r === 'all' ? 'Все' : r === '1' ? '👍' : '👎'}
+                      {r === 'all' ? 'Все' : <Icon name={r === '1' ? 'thumbUp' : 'thumbDown'} size={13} />}
                     </button>
                   ))}
                 </div>
               </div>
               <div className="text-xs text-slate-400 mb-2">Всего: {fbTotal}</div>
               {fbItems.length === 0 && <div className="text-xs text-slate-400">Пока пусто</div>}
-              {fbItems.map((f: any) => (
-                <div key={f.id} className="py-2 border-b border-slate-100 dark:border-slate-800 last:border-0">
-                  <div className="flex flex-wrap items-center gap-2 text-xs">
-                    <span>{f.rating === 1 ? '👍' : '👎'}</span>
-                    <span className="font-medium text-slate-800 dark:text-slate-100 truncate max-w-[280px]" title={f.query}>{f.query}</span>
-                    {f.reason && <span className="px-2 py-0.5 rounded-full bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 text-[11px]">{FEEDBACK_REASON_LABEL[f.reason] || f.reason}</span>}
-                    {f.provider && <span className="text-slate-400 font-mono text-[11px]">{f.provider}</span>}
-                    {f.paragraph && <span className="text-slate-400 text-[11px]">п. {f.paragraph}</span>}
-                    <span className="ml-auto text-slate-400 tabular-nums text-[11px]">{new Date(f.created_at).toLocaleString('ru-RU')}</span>
-                  </div>
-                  <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 truncate" title={f.subject}>
-                    {displaySubject(f.email, f.subject)}{f.mode ? ` • ${f.mode}` : ''}
-                  </div>
-                  {f.comment && <div className="text-xs text-slate-600 dark:text-slate-300 mt-1 bg-slate-50 dark:bg-slate-800/60 rounded-lg px-2.5 py-1.5">{f.comment}</div>}
+              {fbItems.map((f: any) => {
+                const subj = displaySubject(f.email, f.subject)
+                const meta = [subj, f.mode, f.paragraph ? `п. ${f.paragraph}` : '', f.provider, f.reason ? (FEEDBACK_REASON_LABEL[f.reason] || f.reason) : '', new Date(f.created_at).toLocaleString('ru-RU')].filter(Boolean).join(' • ')
+                return (
+                <div key={f.id} className="py-1 border-b border-slate-100 dark:border-slate-800 last:border-0">
+                  <ListRow
+                    compact
+                    className="px-2"
+                    lead={<span className={f.rating === 1 ? 'text-emerald-600 inline-flex' : 'text-red-500 inline-flex'}><Icon name={f.rating === 1 ? 'thumbUp' : 'thumbDown'} size={14} /></span>}
+                    title={<span className="text-[13px] font-medium text-slate-800 dark:text-slate-100">{f.query}</span>}
+                    titleAttr={f.query}
+                    subtitle={<span className="text-slate-400">{meta}</span>}
+                    subtitleAttr={meta}
+                    trail={
+                      <span className="text-[11px] text-slate-400 tabular-nums whitespace-nowrap">
+                        {new Date(f.created_at).toLocaleDateString('ru-RU')}
+                      </span>
+                    }
+                    trailWide
+                  />
+                  {f.comment && <div className="text-xs text-slate-600 dark:text-slate-300 mt-1 ml-11 mr-2 bg-slate-50 dark:bg-slate-800/60 rounded-lg px-2.5 py-1.5 line-clamp-2 [overflow-wrap:anywhere]" title={f.comment}>{f.comment}</div>}
                 </div>
-              ))}
+                )
+              })}
               <div className="flex gap-2 mt-3">
-                <button disabled={fbOff === 0} onClick={() => loadFb(fbOff - 50, fbRating)} className="px-3 py-1.5 rounded-lg border text-xs disabled:opacity-40">← Назад</button>
-                <button disabled={fbOff + 50 >= fbTotal} onClick={() => loadFb(fbOff + 50, fbRating)} className="px-3 py-1.5 rounded-lg border text-xs disabled:opacity-40">Вперёд →</button>
+                <button disabled={fbOff === 0} onClick={() => loadFb(fbOff - 50, fbRating)} className="btn btn-sm btn-secondary"><Icon name="arrowLeft" size={12} /> Назад</button>
+                <button disabled={fbOff + 50 >= fbTotal} onClick={() => loadFb(fbOff + 50, fbRating)} className="btn btn-sm btn-secondary">Вперёд <Icon name="arrowRight" size={12} /></button>
               </div>
             </div>
           )}
@@ -391,22 +401,25 @@ export function AdminView({ user }: { user: any }) {
           {section === 'users' && (
             <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
               <form onSubmit={(e) => { e.preventDefault(); loadUsers(0) }} className="flex gap-2 mb-3">
-                <input value={uq} onChange={(e) => setUq(e.target.value)} placeholder="Поиск по email…" className="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 dark:text-white px-3 py-2 text-sm" />
-                <button className="px-4 py-2 rounded-xl bg-blue-600 text-white text-sm">Найти</button>
+                <input value={uq} onChange={(e) => setUq(e.target.value)} placeholder="Поиск по email…" className="input flex-1" />
+                <button className="btn btn-md btn-primary py-2"><Icon name="search" size={14} /> Найти</button>
               </form>
               <div className="text-xs text-slate-400 mb-2">Всего: {uTotal}</div>
-              {users.map((u: any) => (
-                <div key={u.id} className="flex flex-wrap items-center gap-2 text-xs py-2 border-b border-slate-100 dark:border-slate-800 last:border-0">
-                  <div className="min-w-0 flex-1">
-                    <div className="font-medium text-slate-800 dark:text-slate-100 truncate">{u.email}</div>
-                    <div className="text-slate-400">{u.plan}{u.sub ? ` • ${u.sub}` : ''} • баланс {u.balance}⚡ • потрачено {u.spent}⚡</div>
+              {users.map((u: any) => {
+                const umeta = `${u.plan}${u.sub ? ` • ${u.sub}` : ''} • баланс ${u.balance} • потрачено ${u.spent}`
+                return (
+                <div key={u.id} className="flex items-center gap-2 text-xs py-2 border-b border-slate-100 dark:border-slate-800 last:border-0">
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium text-slate-800 dark:text-slate-100 truncate" title={u.email}>{u.email}</div>
+                    <div className="text-slate-400 truncate" title={umeta}>{umeta}</div>
                   </div>
-                  <button disabled={freezing === u.id} onClick={async () => { if (!confirm(`Заморозить ${u.email}? Баланс ${u.balance}⚡ будет обнулён.`)) return; setFreezing(u.id); try { const r = await freezeUser(u.id, 'freeze from admin'); alert(`Заморожено: ${r.frozen}⚡`); loadUsers(uOff) } catch { alert('Ошибка заморозки') } finally { setFreezing(null) } }} className="px-3 py-1.5 rounded-lg border border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 text-xs disabled:opacity-40">Заморозить</button>
+                  <button disabled={freezing === u.id} onClick={async () => { if (!confirm(`Заморозить ${u.email}? Баланс ${u.balance} будет обнулён.`)) return; setFreezing(u.id); try { const r = await freezeUser(u.id, 'freeze from admin'); alert(`Заморожено: ${r.frozen}`); loadUsers(uOff) } catch { alert('Ошибка заморозки') } finally { setFreezing(null) } }} className="btn btn-sm border border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 bg-transparent hover:bg-red-50 dark:hover:bg-red-950/30 shrink-0 w-[110px] justify-center">Заморозить</button>
                 </div>
-              ))}
+                )
+              })}
               <div className="flex gap-2 mt-3">
-                <button disabled={uOff === 0} onClick={() => loadUsers(uOff - 50)} className="px-3 py-1.5 rounded-lg border text-xs disabled:opacity-40">← Назад</button>
-                <button disabled={uOff + 50 >= uTotal} onClick={() => loadUsers(uOff + 50)} className="px-3 py-1.5 rounded-lg border text-xs disabled:opacity-40">Вперёд →</button>
+                <button disabled={uOff === 0} onClick={() => loadUsers(uOff - 50)} className="btn btn-sm btn-secondary"><Icon name="arrowLeft" size={12} /> Назад</button>
+                <button disabled={uOff + 50 >= uTotal} onClick={() => loadUsers(uOff + 50)} className="btn btn-sm btn-secondary">Вперёд <Icon name="arrowRight" size={12} /></button>
               </div>
             </div>
           )}
@@ -422,9 +435,9 @@ export function AdminView({ user }: { user: any }) {
                         <button
                           key={k.key}
                           onClick={() => toggleKind(k.key)}
-                          className={`px-3 py-1.5 rounded-full text-xs border transition ${on ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:border-blue-300'}`}
+                          className={`chip py-1.5 ${on ? 'chip-active' : ''}`}
                         >
-                          {on ? '☑ ' : '☐ '}{k.label}
+                          {on && <Icon name="check" size={11} />}{k.label}
                         </button>
                       )
                     })}
@@ -442,19 +455,29 @@ export function AdminView({ user }: { user: any }) {
                   Стек-трейсы 500 — в Cloudflare Dashboard → Workers → Logs / <code>wrangler tail</code> (в D1 не пишем — экономим writes).
                 </div>
               )}
-              {(section === 'errors' ? acts.filter((a: any) => a.kind.startsWith('refund')) : acts).map((a: any) => (
-                <div key={a.id} className="flex flex-wrap items-center gap-2 text-xs py-1.5 border-b border-slate-100 dark:border-slate-800 last:border-0">
-                  <span className="text-slate-400 tabular-nums">#{a.id}</span>
-                  <span className="font-medium text-slate-700 dark:text-slate-200">{kindLabel(a.kind, a.meta)}</span>
-                  <span className={`tabular-nums ${a.delta < 0 ? 'text-red-500' : 'text-emerald-600'}`}>{a.delta > 0 ? `+${a.delta}` : a.delta}⚡</span>
-                  <span className="text-slate-500 dark:text-slate-400 truncate max-w-[240px]" title={a.subject}>{displaySubject(a.email, a.subject)}</span>
-                  <span className="ml-auto text-slate-400 tabular-nums">{new Date(a.created_at).toLocaleString('ru-RU')}</span>
-                </div>
-              ))}
+              {(section === 'errors' ? acts.filter((a: any) => a.kind.startsWith('refund')) : acts).map((a: any) => {
+                const asub = displaySubject(a.email, a.subject)
+                const asub2 = `${asub} • ${new Date(a.created_at).toLocaleString('ru-RU')}`
+                return (
+                <ListRow
+                  key={a.id}
+                  compact
+                  className="px-2"
+                  title={<span className="text-xs font-medium text-slate-700 dark:text-slate-200"><span className="text-slate-400 tabular-nums font-normal">#{a.id} </span>{kindLabel(a.kind, a.meta)}</span>}
+                  titleAttr={`#${a.id} ${kindLabel(a.kind, a.meta)}`}
+                  subtitle={<span className="text-slate-400">{asub2}</span>}
+                  subtitleAttr={asub2}
+                  trail={
+                    <span className={`tabular-nums inline-flex items-center justify-end gap-0.5 text-xs whitespace-nowrap ${a.delta < 0 ? 'text-red-500' : 'text-emerald-600'}`}>{a.delta > 0 ? `+${a.delta}` : a.delta}<Icon name="bolt" size={10} /></span>
+                  }
+                  trailWide
+                />
+                )
+              })}
               {section === 'activity' && (
                 <div className="flex gap-2 mt-3">
-                  <button disabled={aOff === 0} onClick={() => loadActs(aOff - 50, kinds)} className="px-3 py-1.5 rounded-lg border text-xs disabled:opacity-40">← Назад</button>
-                  <button disabled={aOff + 50 >= aTotal} onClick={() => loadActs(aOff + 50, kinds)} className="px-3 py-1.5 rounded-lg border text-xs disabled:opacity-40">Вперёд →</button>
+                  <button disabled={aOff === 0} onClick={() => loadActs(aOff - 50, kinds)} className="btn btn-sm btn-secondary"><Icon name="arrowLeft" size={12} /> Назад</button>
+                  <button disabled={aOff + 50 >= aTotal} onClick={() => loadActs(aOff + 50, kinds)} className="btn btn-sm btn-secondary">Вперёд <Icon name="arrowRight" size={12} /></button>
                 </div>
               )}
             </div>
@@ -463,7 +486,7 @@ export function AdminView({ user }: { user: any }) {
           {section === 'params' && stats && (
             <div className="space-y-4">
               <div className="text-[11px] text-slate-400">
-                Лимиты и стоимость правятся в разделе «Квоты ИИ» <button onClick={() => setSection('quotas')} className="text-blue-600 underline">перейти →</button>
+                Лимиты и стоимость правятся в разделе «Квоты ИИ» <button onClick={() => setSection('quotas')} className="text-blue-600 dark:text-blue-400 underline">перейти</button>
               </div>
 
               <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
@@ -531,7 +554,7 @@ export function AdminView({ user }: { user: any }) {
                       <div key={sku} className="flex text-xs py-1 border-b border-slate-100 dark:border-slate-800">
                         <span className="font-mono text-slate-500">{sku}</span>
                         <span className="ml-2 text-slate-700 dark:text-slate-200">{p.label}</span>
-                        <span className="ml-auto tabular-nums text-slate-500">{Number(p.price).toLocaleString('ru-RU')}₸ • {p.dailyLimit}⚡/день • {p.days} дн.</span>
+                        <span className="ml-auto tabular-nums text-slate-500">{Number(p.price).toLocaleString('ru-RU')}₸ • {p.dailyLimit}/день • {p.days} дн.</span>
                       </div>
                     ))}
                     <div className="text-[11px] text-slate-400 mt-3 mb-1 tracking-widest uppercase">Пакеты кредитов</div>
@@ -539,7 +562,7 @@ export function AdminView({ user }: { user: any }) {
                       <div key={sku} className="flex text-xs py-1 border-b border-slate-100 dark:border-slate-800 last:border-0">
                         <span className="font-mono text-slate-500">{sku}</span>
                         <span className="ml-2 text-slate-700 dark:text-slate-200">{p.label}</span>
-                        <span className="ml-auto tabular-nums text-slate-500">{Number(p.price).toLocaleString('ru-RU')}₸ • +{Number(p.credits).toLocaleString('ru-RU')}⚡</span>
+                        <span className="ml-auto tabular-nums text-slate-500">{Number(p.price).toLocaleString('ru-RU')}₸ • +{Number(p.credits).toLocaleString('ru-RU')} кр.</span>
                       </div>
                     ))}
                   </>

@@ -1,13 +1,13 @@
 """
 build_index.py — оффлайн-сборка статического поискового индекса SNIP.
 
-Вход:  «СНиП РК»/**/*.{pdf,docx,doc,txt} — рекурсивно, все подпапки
+Вход:  norms/**/*.{pdf,docx,doc,txt} — рекурсивно, все подпапки
        (опционально meta.json в корне папки с номерами/названиями)
 Выход: frontend/public/index/{manifest.json, docs.json, chunks.json, vectors.bin, bm25.json, synonyms.json}
 
 Запуск:
-  /opt/homebrew/bin/python3 scripts/build_index.py                 # папка «СНиП РК»
-  /opt/homebrew/bin/python3 scripts/build_index.py --with-demo     # «СНиП РК» + демо-документы
+  /opt/homebrew/bin/python3 scripts/build_index.py                 # папка norms/
+  /opt/homebrew/bin/python3 scripts/build_index.py --with-demo     # norms/ + демо-документы
   /opt/homebrew/bin/python3 scripts/build_index.py --no-input      # только демо (для тестов)
   /opt/homebrew/bin/python3 scripts/build_index.py --input DIR --out DIR
 
@@ -15,10 +15,11 @@ build_index.py — оффлайн-сборка статического поис
 нижний регистр, ё→е, токены [а-яa-z0-9]+, стоп-слова, отсечение ОДНОГО суффикса.
 """
 import sys
+import hashlib
 import json
 import re
-import time
 import struct
+import time
 import argparse
 from pathlib import Path
 
@@ -40,24 +41,60 @@ STOPWORDS = set("""и в во не что он на я с со как а то в
 SUFFIXES = sorted([
     "ования", "ование", "ениями", "ение", "ениям", "ениях", "ироваться",
     "ирован", "ировать", "ами", "ями", "ого", "его", "ому", "ему", "ыми", "ими",
+    "ых", "их",
     "ая", "ое", "ые", "ий", "ый", "ой", "ей", "ом", "ем", "ах", "ях", "ую", "юю",
     "ее", "ии", "ия", "ие", "ов", "ев", "ь", "а", "я", "о", "е", "у", "ю", "ы", "и", "й",
 ], key=len, reverse=True)
 
 TOKEN_RE = re.compile(r"[а-яa-z0-9]+")
 
+# Числительные словами → цифры (кардиналы — точные формы, ординалы — основы
+# после стемминга). Мостик «пятого↔5»: иначе запрос «на 7 этаже» не видит чанк
+# «не выше пятого этажа» в BM25. Зеркало frontend/src/utils/stem.ts — синхронно.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from values_extract import WORD_NUMS as _WORD_NUMS
+except ImportError:  # автономный импорт без scripts в path
+    _WORD_NUMS = {}
+CARDINAL_WORDS: dict[str, int] = dict(_WORD_NUMS) if _WORD_NUMS else {
+    "один": 1, "одна": 1, "одно": 1, "одного": 1, "одной": 1,
+    "два": 2, "две": 2, "двух": 2, "три": 3, "трех": 3,
+    "четыре": 4, "четырех": 4, "пять": 5, "пяти": 5,
+    "шесть": 6, "шести": 6, "семь": 7, "семи": 7,
+    "восемь": 8, "восьми": 8, "девять": 9, "девяти": 9,
+    "десять": 10, "десяти": 10,
+}
+ORDINAL_STEMS: dict[str, int] = {
+    "перв": 1, "втор": 2, "трет": 3, "четверт": 4, "пят": 5,
+    "шест": 6, "седьм": 7, "восьм": 8, "девят": 9, "десят": 10,
+    "одиннадцат": 11, "двенадцат": 12, "тринадцат": 13,
+    "четырнадцат": 14, "пятнадцат": 15, "шестнадцат": 16,
+    "семнадцат": 17, "восемнадцат": 18, "девятнадцат": 19,
+    "двадцат": 20,
+}
+
 def tokenize(text: str) -> list[str]:
     out = []
     for w in TOKEN_RE.findall(text.lower().replace("ё", "е")):
-        if w in STOPWORDS or len(w) < 2:
+        if w in STOPWORDS:
             continue
+        # цифры — граждане первого класса (раньше len<2 их выкидывал и «7»
+        # видел только эмбеддинг, а BM25 — нет: табличная «7» била «пятого»)
         if w.isdigit():
             out.append(w)
+            continue
+        if len(w) < 2:
+            continue
+        if w in CARDINAL_WORDS:
+            out.append(str(CARDINAL_WORDS[w]))
             continue
         for suf in SUFFIXES:
             if w.endswith(suf) and len(w) - len(suf) >= 3 and not suf.isdigit():
                 w = w[: -len(suf)]
                 break
+        if w in ORDINAL_STEMS:
+            out.append(str(ORDINAL_STEMS[w]))
+            continue
         if w not in STOPWORDS and len(w) >= 2:
             out.append(w)
     return out
@@ -104,11 +141,19 @@ SYNONYMS = {
     "лестница": ["лестничная клетка", "марш", "эвакуационная лестница", "ступени"],
     "ширина": ["минимальная ширина", "размер", "габарит"],
     "высота": ["высота помещения", "высота этажа", "минимальная высота", "высота подоконника", "высота окна"],
+    "потолок": ["потолочный", "перекрытие", "пол-потолок"],
+    "квартира": ["жилое помещение", "внутриквартирный", "комната"],
+    "помещение": ["комната", "жилое помещение", "квартира"],
     "подоконник": ["оконный проём", "высота подоконника", "окно", "подоконная доска"],
     "окно": ["оконный проём", "остекление", "подоконник"],
     "мжк": ["жилой комплекс", "многоквартирный дом", "жилое здание", "многоквартирный жилой комплекс"],
     "многоквартирный": ["многоквартирный дом", "жилой комплекс", "МЖК"],
     "жилой": ["жилой комплекс", "многоквартирный дом", "жилое здание"],
+    "сад": ["дошкольное образование", "детский сад", "дошкольн"],
+    "детский": ["дошкольн", "детский сад"],
+    "дошкольный": ["дошкольн"],
+    "детсад": ["дошкольн"],
+    "ясли": ["дошкольн"],
     "здание": ["строение", "сооружение", "объект"],
     "общественное здание": ["административное здание", "общественное сооружение"],
     "эвакуационный": ["эвакуация", "пожарный", "аварийный выход"],
@@ -118,9 +163,12 @@ DOC_NUMBER_RE = re.compile(r"(?:СН|СП|СТ|СНиП|ГОСТ)[\s._-]*РК?[\
 
 
 def parse_doc_meta(pdf_path: Path, meta_all: dict) -> dict:
-    key = pdf_path.stem
-    clean_stem = pdf_path.stem.replace("_", " ").replace("+", " ")
-    m = meta_all.get(key) or meta_all.get(pdf_path.name) or {}
+    import unicodedata
+    key = unicodedata.normalize("NFC", pdf_path.stem)
+    clean_stem = key.replace("_", " ").replace("+", " ")
+    m = meta_all.get(key) or meta_all.get(unicodedata.normalize("NFC", pdf_path.name)) or {}
+    if m.get("skip"):
+        return {"skip": m["skip"]}
     number = m.get("number")
     if not number:
         found = DOC_NUMBER_RE.search(clean_stem)
@@ -229,12 +277,15 @@ def make_doc(title: str, text: str, source_format: str):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--input", default=str(ROOT / "СНиП РК"))
+    ap.add_argument("--input", default=str(ROOT / "norms"))
     ap.add_argument("--out", default=str(ROOT / "frontend" / "public" / "index"))
-    ap.add_argument("--no-input", action="store_true", help="не читать «СНиП РК» (только демо)")
+    ap.add_argument("--no-input", action="store_true", help="не читать norms/ (только демо)")
     ap.add_argument("--with-demo", action="store_true", help="добавить встроенные демо-документы")
     ap.add_argument("--batch", type=int, default=64)
     ap.add_argument("--provider", default="", help="форсировать провайдера: gemini|jina|voyage|cohere|mistral")
+    ap.add_argument("--reuse-vectors", action="store_true",
+                    help="переиспользовать кэш эмбеддингов (.index_cache/) по sha256 текста чанка — "
+                         "пересборка ради values.json/новых документов не тратит квоту API")
     args = ap.parse_args()
 
     from app.pipeline.extractor import PDFExtractor
@@ -269,13 +320,29 @@ def main():
     for file_path in files:
         rel = file_path.relative_to(input_dir)
         ext = file_path.suffix.lower()
-        print(f"  extract[{ext}]: {rel}")
         doc_info = parse_doc_meta(file_path, meta_all)
+        if doc_info.get("skip"):
+            print(f"  skip: {rel} — {doc_info['skip']}")
+            continue
+        print(f"  extract[{ext}]: {rel}")
         if ext == ".pdf":
-            extracted = extractor.extract(file_path)
-            if extracted.is_scanned:
-                print(f"    скан → OCR fallback")
-                extracted = extractor.extract_with_ocr(file_path, lang="rus+eng")
+            import signal
+
+            def _extract_timeout(signum, frame):
+                raise TimeoutError(f"extract timeout: {rel}")
+
+            signal.signal(signal.SIGALRM, _extract_timeout)
+            signal.alarm(1800)
+            try:
+                extracted = extractor.extract(file_path)
+                if extracted.is_scanned:
+                    print(f"    скан → OCR fallback")
+                    extracted = extractor.extract_with_ocr(file_path, lang="rus+eng")
+            except TimeoutError as e:
+                print(f"    ⚠️ таймаут извлечения (30 мин) — пропуск: {e}")
+                continue
+            finally:
+                signal.alarm(0)
         else:
             try:
                 text = extract_text(file_path)
@@ -308,7 +375,17 @@ def main():
             print(f"демо: {dd['number']} -> {len(chunks) - n0} чанков")
 
     if not chunks:
-        print("Нет чанков — положи файлы (pdf/docx/doc/txt) в «СНиП РК» или включи --with-demo"); sys.exit(1)
+        print("Нет чанков — положи файлы (pdf/docx/doc/txt) в norms/ или включи --with-demo"); sys.exit(1)
+
+    # ---- 1.5. Числовые требования (values.json) — без API, только regex ----
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from values_extract import extract_values
+    values = extract_values(chunks)
+    (out_dir / "values.json").write_text(
+        json.dumps({"version": 1, "count": len(values), "facts": values},
+                   ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8")
+    print(f"values.json: {len(values)} числовых требований")
 
     # ---- 2. Эмбеддинги: цепочка «мощные → хорошие → средние» ----
     # Весь индекс строится ОДНИМ провайдером; если его квота исчерпана —
@@ -324,6 +401,23 @@ def main():
     if not chain:
         sys.exit("Нет ни одного ключа эмбеддингов (GEMINI/JINA/VOYAGE/COHERE/MISTRAL_API_KEY)\n"
                  "Добавьте хотя бы один в backend/.env — все бесплатные, без карты")
+
+    # ---- 2a. Кэш эмбеддингов (--reuse-vectors): sha256(text[:8000]) -> (scale, int8) ----
+    vec_cache: dict[str, tuple[float, bytes]] = {}
+    vec_cache_meta: dict = {}
+    if args.reuse_vectors:
+        vec_cache, vec_cache_meta = _load_vec_cache()
+        if vec_cache:
+            hit = sum(1 for c in chunks if _chunk_hash(c["t"]) in vec_cache)
+            print(f"кэш векторов: {len(vec_cache)} записей ({vec_cache_meta.get('provider')}/"
+                  f"{vec_cache_meta.get('model')}), совпадений с текущими чанками: {hit}/{len(chunks)}")
+            # кэшированного провайдера — первым, чтобы не жечь чужую квоту
+            cached = [(n, e) for n, e in chain
+                      if n == vec_cache_meta.get("provider") and getattr(e, "model", "") == vec_cache_meta.get("model")]
+            if cached:
+                chain = cached + [(n, e) for n, e in chain if (n, e) not in cached]
+        else:
+            print("кэш векторов пуст — полное эмбеддирование")
     print("Цепочка провайдеров:", " → ".join(n for n, _ in chain))
 
     global _GOOD_SIZE
@@ -333,11 +427,40 @@ def main():
     for pname, embedder in chain:
         _GOOD_SIZE = None  # у каждого API свои лимиты — ищем заново
         print(f"── эмбеддинги через {pname} ({getattr(embedder, 'model', '?')}, {embedder.dim}d)")
+        # Совпадение с кэшем: эмбеддим только недостающие чанки
+        use_cache = bool(vec_cache) and pname == vec_cache_meta.get("provider") \
+            and getattr(embedder, "model", "") == vec_cache_meta.get("model") \
+            and embedder.dim == vec_cache_meta.get("dim")
         try:
             vs: list = []
             dim = None
             t0 = time.time()
             B = args.batch
+            if use_cache:
+                miss_idx = [i for i, c in enumerate(chunks) if _chunk_hash(c["t"]) not in vec_cache]
+                print(f"кэш покрывает {len(chunks) - len(miss_idx)}/{len(chunks)} — эмбеддим {len(miss_idx)}")
+                fresh: dict[int, list] = {}
+                for j in range(0, len(miss_idx), B):
+                    part = miss_idx[j: j + B]
+                    batch_texts = [chunks[i]["t"][:8000] for i in part]
+                    embs = _embed_sync(embedder, batch_texts)
+                    if dim is None and embs:
+                        dim = len(embs[0])
+                    for i, e in zip(part, embs):
+                        fresh[i] = e
+                    done = min(j + B, len(miss_idx))
+                    print(f"embed {done}/{len(miss_idx)} ({time.time()-t0:.0f}s)")
+                    time.sleep(1.5)  # pacing против RPM-лимитов free-tier
+                if dim is None:
+                    dim = vec_cache_meta["dim"]
+                for i, c in enumerate(chunks):
+                    if i in fresh:
+                        vs.append(fresh[i])
+                    else:
+                        sc, qb = vec_cache[_chunk_hash(c["t"])]
+                        vs.append(_dequant(sc, qb, dim))
+                vectors, chosen = vs, pname
+                break
             for i in range(0, len(chunks), B):
                 batch_texts = [c["t"][:8000] for c in chunks[i : i + B]]
                 embs = _embed_sync(embedder, batch_texts)
@@ -346,6 +469,7 @@ def main():
                 vs.extend(embs)
                 done = min(i + B, len(chunks))
                 print(f"embed {done}/{len(chunks)} ({time.time()-t0:.0f}s)")
+                time.sleep(1.5)  # pacing против RPM-лимитов free-tier
             vectors, chosen = vs, pname
             break
         except Exception as e:
@@ -391,17 +515,68 @@ def main():
     (out_dir / "docs.json").write_text(json.dumps(docs, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     (out_dir / "synonyms.json").write_text(json.dumps(SYNONYMS, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     manifest = {
-        "version": 1,
+        "version": 2,
         "builtAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "dim": dim, "count": len(chunks), "quantization": "int8-per-vector",
         "provider": chosen,
         "model": next(e.model for n, e in chain if n == chosen),
         "bm25": {"k1": 1.2, "b": 0.75},
         "rrfK": 60,
+        "values": {"version": 1, "count": len(values), "file": "values.json"},
     }
     (out_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8")
+    if args.reuse_vectors:
+        _save_vec_cache(chunks, scales, bytes(q),
+                        {"provider": chosen,
+                         "model": next(e.model for n, e in chain if n == chosen),
+                         "dim": dim})
     total_kb = sum(f.stat().st_size for f in out_dir.iterdir()) / 1024
     print(f"\nГотово: {out_dir} ({total_kb:.0f} KB суммарно)")
+
+
+VEC_CACHE_DIR = ROOT / ".index_cache"
+
+
+def _chunk_hash(text: str) -> str:
+    return hashlib.sha256(text[:8000].encode("utf-8")).hexdigest()
+
+
+def _quantize_one(v: list[float]) -> tuple[float, bytes]:
+    s = max(max(v), -min(v)) / 127.0 or 1.0
+    return s, bytes((max(-128, min(127, round(x / s))) & 0xFF) for x in v)
+
+
+def _dequant(scale: float, qb: bytes, dim: int) -> list[float]:
+    return [((b if b < 128 else b - 256) * scale) for b in bytes(qb)[:dim]]
+
+
+def _load_vec_cache() -> tuple[dict, dict]:
+    """{sha256: (scale, int8-bytes)}, meta. Пусто — если кэша нет."""
+    try:
+        meta = json.loads((VEC_CACHE_DIR / "vec_meta.json").read_text(encoding="utf-8"))
+        hashes = json.loads((VEC_CACHE_DIR / "vec_hashes.json").read_text(encoding="utf-8"))
+        raw = (VEC_CACHE_DIR / "vec_data.bin").read_bytes()
+        magic, dim, n = struct.unpack_from("<4sII", raw, 0)
+        assert magic == b"SNVC" and n == len(hashes) and meta.get("dim") == dim
+        scales = struct.unpack_from(f"<{n}f", raw, 12)
+        data = raw[12 + 4 * n:]
+        assert len(data) == n * dim
+        cache = {h: (scales[i], data[i * dim:(i + 1) * dim]) for i, h in enumerate(hashes)}
+        return cache, meta
+    except Exception as e:
+        print(f"кэш векторов недоступен ({e}) — полное эмбеддирование")
+        return {}, {}
+
+
+def _save_vec_cache(chunks: list[dict], scales: list[float], q: bytes, meta: dict) -> None:
+    VEC_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    hashes = [_chunk_hash(c["t"]) for c in chunks]
+    dim = meta["dim"]
+    (VEC_CACHE_DIR / "vec_meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    (VEC_CACHE_DIR / "vec_hashes.json").write_text(json.dumps(hashes, separators=(",", ":")), encoding="utf-8")
+    (VEC_CACHE_DIR / "vec_data.bin").write_bytes(
+        struct.pack("<4sII", b"SNVC", dim, len(hashes)) + struct.pack(f"<{len(scales)}f", *scales) + q)
+    print(f"кэш векторов сохранён: {len(hashes)} записей")
 
 
 _EMBED_LOOP = None  # один цикл на все батчи: httpx.AsyncClient привязан к первому loop
@@ -436,7 +611,9 @@ def _embed_sync(embedder, texts, _depth=0):
             transient = (not rate_limited) and (
                 any(t in low for t in ("ssl", "bad record mac", "timeout", "timed out",
                                        "connection", "reset by peer", "broken pipe",
-                                       "eof occurred", "network"))
+                                       "eof occurred", "network", "nodename",
+                                       "name or service not known", "getaddrinfo",
+                                       "temporarily unavailable"))
                 or isinstance(e, (TimeoutError, ConnectionError))
             )
             if not rate_limited and not transient:

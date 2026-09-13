@@ -4,7 +4,9 @@
 
 > **Пользователь пишет вопрос своими словами → ИИ понимает смысл → находит релевантный пункт → показывает первым → даёт цитату, пункт, страницу, статус и ссылку.**
 
-**Стек:** Python + FastAPI + PostgreSQL 17 + pgvector + tsvector/pg_trgm + sentence-transformers + Ollama (gemma/qwen) + React + Vite + Tailwind
+**Стек (прод):** Cloudflare Pages (фронт `https://snippy-llm.pages.dev`) + Cloudflare Worker (`https://snip-worker.postalarchive.workers.dev`: auth, кредиты, `/ask` → Groq, `/embed` → Gemini) + D1 + статический индекс (`/index`) + React + Vite + Tailwind
+
+**Кредиты (акция):** гости — 30⚡/день (сброс 00:00 UTC), зарегистрированные — 300⚡ каждый час. Списание: сначала бесплатный лимит, затем накопительный баланс. Быстрый поиск — 5⚡, глубокий с ИИ — 10⚡. Демо-оплата (пакеты/подписки без денег) — только админы `postalarchive@gmail.com`, `aidos77_77@mail.ru`, остальным кнопки неактивны.
 
 ---
 
@@ -25,6 +27,8 @@
 - Режимы: **Быстрый** (топ-3 в LLM) ~4-6с, **Глубокий** (топ-5, анализ нескольких документов) ~8-12с
 
 **LLM:** Ollama OpenAI-совместимый `/v1/chat/completions` → `/api/chat` → `/api/generate` fallback, модель `gemma4:e2b` (9GB, ru/kz лучше) / `qwen2.5-coder` fallback, temp 0.1, strict grounding prompt, проверка `quote in context` fuzzy.
+
+**Смарт-контур (прод Worker, 10.09.2026):** понимание запроса (`/api/rewrite`, D1-кэш 30д) → расширение пула кандидатов BM25/векторными хитами переформулировок (до 32) → reranking каскадом Voyage `rerank-2` → Cohere `rerank-multilingual-v3.0` → LLM-listwise (Groq) → исходный порядок → prompt v2 (числа строго из цитаты, сравнения построчно) + второй проход при «не найдено». Сравнения всегда идут через LLM. Флаги в админке: `smart_rewrite`, `smart_rerank`, `smart_second_pass`. Уточняющие вопросы переформулируются с историей и ищут заново, а не отвечают тем же контекстом. Метрики за сутки: `GET /api/admin/health → smart{}` (grounded/not_found/second_pass/rerank/cache). Линейка: `scripts/eval_search.py` + `scripts/eval/golden.jsonl` (baseline Hit@1 32.6% / Hit@3 63.0% / MRR 0.484).
 
 **Collector:** `app/collector/sources/adilet.py` — парсит `adilet.zan.kz` (BeautifulSoup), ищет `СН РК/СНиП/СП РК`, определяет статус `действует/утратил силу/заменён` по тексту, скачивает PDF, checksum, ставит `replaced_by_id`. APScheduler ежедневно 02:00 Asia/Almaty.
 
@@ -99,13 +103,32 @@ curl http://localhost:11434/api/tags
 Дата актуальности: 19.08.2026
 ```
 
-**Документы:** вкладка Документы — список с пагинацией, бейдж статуса, PDF по клику (`/api/documents/{id}/pdf` → FileResponse)
+**Документы:** вкладка Документы — общий пакет норм ( blur + «Для просмотра войдите» для гостей), PDF по клику (`/api/norms/:file` из R2/индекса)
 
-**Админ:** вкладка Админ — загрузка PDF (multipart) → индексация, кнопка запуска Collector, логи `collector_logs`.
+**Профиль:** имя меняется раз в 30 дней с подтверждением (первая установка свободна): `PATCH /api/me {full_name}` → `429 name_cooldown` если рано. В обзоре — «Нормативная база в поиске» (доки/фрагменты/дата сборки) + «Ваша статистика» (потрачено ⚡, операции).
+
+**Админ:** загрузка PDF → индексация (legacy FastAPI-бэк), кнопка запуска Collector, логи `collector_logs`.
 
 ---
 
-## API
+## API (Worker, прод)
+
+```
+POST /api/auth/register {email,password,full_name?} → {uid,email,full_name,token}
+POST /api/auth/login {email,password} → {uid,email,full_name,token}
+GET  /api/me → {uid,email,full_name,name_changed_at,name_can_change_at,created_at,is_admin,credits}
+PATCH /api/me {full_name} → смена имени (кулдаун 30 дней, первая установка свободна)
+GET  /api/credits → {daily:{used,limit,remaining},balance,plan,reset:'hourly'|'daily'}
+POST /api/credits/spend {mode:fast|deep}
+GET  /api/credits/history?limit=
+POST /api/billing/purchase {sku} → ТОЛЬКО админы, иначе 403 billing_disabled
+POST /api/ask {query,mode,chunkIds,candidates,followUp,history} → списывает стоимость, rerank + Groq с заземлением
+POST /api/rewrite {query,history?,followUp?} → {standalone,queries,terms} — понимание запроса (0⚡, кэш 30д)
+POST /api/embed {query} → float[]
+POST /api/explain {text,doc_number?} → только подписчики Pro/Business, кап/день
+```
+
+Legacy FastAPI-бэк (`backend/`, локальный Docker):
 
 ```
 POST /api/search {query, mode:fast|deep, top_k, filters:{type,status,document_id}}
@@ -171,7 +194,7 @@ scripts/seed.py
 
 ## TODO / ограничения MVP
 
-- [ ] Reranker `bge-reranker-v2-m3` cross-encoder (сейчас RRF + вектор)
+- [ ] Оплаченный cross-encoder reranker (trial-квоты Voyage 3 RPM / Cohere 10 RPM; сейчас каскад + LLM-listwise)
 - [ ] Таблицы (`camelot`/`tabula`) — отдельный `type=table` чанк
 - [ ] OCR для сканов (требует `brew install tesseract tesseract-lang`)
 - [ ] Кэш embeddings (redis уже стоит)

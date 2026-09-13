@@ -2,11 +2,14 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── База ── */
 * { scrollbar-width: thin; }
 
 body {
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   background: #f8fafc;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 /* Dark mode body */
@@ -19,50 +22,245 @@ body {
   background: #0f172a;
 }
 
+/* ── Анимации ── */
 @keyframes float {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-6px); }
-}
-@keyframes shimmer {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(200%); }
 }
 @keyframes dropdown-in {
   from { opacity: 0; transform: translateY(-6px) scale(0.98); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
-@keyframes pin-pulse {
-  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(59,130,246,0.6); }
-  50% { transform: scale(1.08); box-shadow: 0 0 0 6px rgba(59,130,246,0); }
-  100% { transform: scale(1); }
-}
-@keyframes pin-bounce {
-  0%,100% { transform: scale(1); }
-  30% { transform: scale(1.25); }
-  60% { transform: scale(0.92); }
-}
-.animate-dropdown { animation: dropdown-in 160ms ease-out; }
-.pin-pulse { animation: pin-pulse 600ms ease-out; }
-.pin-bounce { animation: pin-bounce 600ms cubic-bezier(0.34,1.56,0.64,1); }
-.fly-clone {
-  position: fixed;
-  width: 36px;
-  height: 36px;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #f59e0b, #fbbf24);
-  border: 2px solid white;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.18);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 9999;
-  pointer-events: none;
-  transition: transform 620ms cubic-bezier(0.2, 0, 0, 1), opacity 620ms ease;
-  transform: translate(0,0) scale(1);
-  opacity: 1;
-}
-
-/* ── Модалки (вход, квота) ── */
 @keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
 @keyframes popIn { from { opacity: 0; transform: scale(.96) translateY(8px) } to { opacity: 1; transform: scale(1) translateY(0) } }
 @keyframes slideUp { from { opacity: 0; transform: translateY(12px) } to { opacity: 1; transform: translateY(0) } }
+
+.animate-dropdown { animation: dropdown-in 160ms ease-out; }
+
+/* ── Подсветка контекста в PDF (openPdf с quote) ── */
+.textLayer {
+  position: absolute;
+  text-align: initial;
+  inset: 0;
+  overflow: hidden;
+  line-height: 1;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  caret-color: CanvasText;
+}
+.textLayer span, .textLayer br {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+}
+.textLayer span.markedContent { top: 0; height: 0; }
+.textLayer .highlight {
+  margin: -1px;
+  padding: 1px;
+  background-color: rgba(59, 130, 246, 0.25);
+}
+.textLayer ::selection { background: rgba(59, 130, 246, 0.4); }
+
+/* Однотонная лента: без outline (давал сетку линий на стыках спанов),
+   multiply не даёт перекрытиям спанов темнеть сверх тона, текст канваса резкий */
+.textLayer mark.snip-hit {
+  color: transparent;
+  background: rgba(253, 230, 138, 0.34);
+  mix-blend-mode: multiply;
+  border-radius: 2px;
+}
+.textLayer span.snip-hit {
+  background: rgba(253, 230, 138, 0.34);
+  mix-blend-mode: multiply;
+  border-radius: 2px;
+}
+.dark .textLayer span.snip-hit { background: rgba(245, 158, 11, 0.34); }
+.dark .textLayer mark.snip-hit { background: rgba(245, 158, 11, 0.34); }
+
+/* ── Мобайл-база (<768px): десктоп не затрагивается ── */
+.no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
+/* ── Компонентные классы: единые карточки/кнопки/чипы ── */
+@layer components {
+  .card {
+    @apply bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800;
+  }
+  .card-hover {
+    @apply transition hover:border-slate-300 dark:hover:border-slate-700 hover:shadow-sm;
+  }
+  .section-label {
+    @apply text-[11px] font-semibold uppercase tracking-widest text-slate-500 dark:text-slate-400;
+  }
+  .muted {
+    @apply text-slate-500 dark:text-slate-400;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-xl font-medium transition disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-sm { @apply px-3 py-1.5 text-xs; }
+  .btn-md { @apply px-4 py-2 text-sm; }
+  .btn-primary { @apply bg-slate-900 text-white hover:bg-slate-700 shadow-sm dark:bg-white dark:text-slate-900 dark:hover:bg-slate-200; }
+  .btn-secondary {
+    @apply bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800;
+  }
+  .btn-ghost {
+    @apply text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800;
+  }
+  .icon-btn {
+    @apply w-9 h-9 shrink-0 inline-flex items-center justify-center rounded-xl text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition;
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 transition hover:border-slate-300 dark:hover:border-slate-600;
+  }
+  .chip-active {
+    @apply bg-slate-900 dark:bg-white text-white dark:text-slate-900 border-transparent hover:border-transparent;
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1 text-[11px] leading-none px-2 py-1 rounded-full border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300;
+  }
+
+  /* ── Beta-blur: будущие тарифы/пакеты скрыты до конца беты ── */
+  .beta-blur {
+    filter: blur(6px);
+    user-select: none;
+    pointer-events: none;
+  }
+
+  .input {
+    @apply w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white placeholder:text-slate-400 px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-slate-900/15 focus:border-slate-900 dark:focus:ring-white/20 dark:focus:border-slate-300;
+  }
+
+  /* ── ListRow: фиксированная сетка строк списков ──
+     [lead 32px | body minmax(0,1fr) | trail 32px], ширина от контейнера.
+     Заголовок + подзаголовок — строго 1+1 с ellipsis. */
+  .list-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    width: 100%;
+    min-height: 44px;
+    padding: 6px 12px;
+    border-radius: 12px;
+    border: 1px solid transparent;
+    text-align: left;
+  }
+  .list-row--compact { min-height: 36px; padding: 4px 12px; }
+  .list-row__lead {
+    width: 32px;
+    height: 32px;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+  }
+  .list-row--compact .list-row__lead { width: 28px; height: 28px; }
+  .list-row__body {
+    flex: 1 1 0%;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    text-align: left;
+    background: transparent;
+    border: 0;
+    padding: 0;
+    cursor: inherit;
+  }
+  button.list-row__body { cursor: pointer; }
+  button.list-row { cursor: pointer; }
+  button.list-row__body:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 2px;
+    border-radius: 8px;
+  }
+  .list-row__title {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 14px;
+    line-height: 20px;
+    font-weight: 500;
+  }
+  .list-row__sub {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+    line-height: 16px;
+  }
+  .list-row__trail {
+    width: 32px;
+    height: 32px;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .list-row__trail--wide {
+    width: 72px;
+    justify-content: flex-end;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Сайдбар истории (десктоп): ширина 0 → 288px, контент не схлопывается ── */
+  .sidebar-history {
+    width: 0;
+    min-height: 0;
+    position: sticky;
+    top: 56px;
+    height: calc(100vh - 56px);
+    transition: width 240ms ease-out;
+  }
+  .sidebar-history--open { width: 288px; }
+
+  /* ── Кнопка истории: статичная, красивое нажатие (scale + pop) ── */
+  @keyframes history-press {
+    0% { transform: scale(1); }
+    40% { transform: scale(0.86); }
+    70% { transform: scale(1.06); }
+    100% { transform: scale(1); }
+  }
+  .history-btn {
+    transition: transform 160ms ease-out, background-color 160ms ease-out;
+  }
+  .history-btn:active { transform: scale(0.88); }
+  .history-btn--pop { animation: history-press 260ms ease-out; }
+  @media (prefers-reduced-motion: reduce) {
+    .sidebar-history,
+    .history-btn,
+    .history-btn--pop { transition: none; animation: none; }
+  }
+
+  /* ── Монохром: единственный акцент — slate-900 (dark: white).
+     Цвет только для статусов (действует/заменён/ошибка). Без градиентов. ── */
+  .mono-accent { @apply text-slate-900 dark:text-white font-bold tabular-nums; }
+  .mono-quote {
+    @apply font-mono text-[13px] leading-relaxed text-slate-700 dark:text-slate-200 bg-slate-50 dark:bg-slate-800/60 rounded-xl p-3 border border-slate-200 dark:border-slate-700 border-l-2 border-l-slate-900 dark:border-l-slate-100 overflow-hidden max-w-full [overflow-wrap:anywhere];
+  }
+}
+
+@media (max-width: 767.98px) {
+  body {
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* 16px в полях — iOS не зумит при фокусе */
+  input, select, textarea { font-size: 16px; }
+  /* Медиа не рвут узкий layout */
+  img, canvas, video, svg { max-width: 100%; }
+  canvas { height: auto; }
+  /* PDF-канвас управляется JS-размерами — исключение */
+  .textLayer { max-width: none; }
+}

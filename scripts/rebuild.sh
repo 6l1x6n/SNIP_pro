@@ -1,6 +1,6 @@
 #!/bin/bash
 # rebuild.sh — полный цикл обновления нормативной базы snippy.llm
-# 1) сборка индекса из «СНиП РК»   2) PDF в статику Pages (+ в R2, если бакет включён)
+# 1) сборка индекса из norms/   2) PDF в статику Pages (+ в R2, если бакет включён)
 # 3) деплой фронта на Cloudflare Pages
 # Использование: ./scripts/rebuild.sh [--skip-r2] [--skip-pages]
 
@@ -20,7 +20,7 @@ done
 cd "$ROOT"
 
 if [ "$SKIP_BUILD" -eq 0 ]; then
-  echo "── 1/4 Сборка поискового индекса из «СНиП РК»"
+  echo "── 1/4 Сборка поискового индекса из norms/"
   "$PY" scripts/build_index.py
 else
   echo "── 1/4 Сборка пропущена (--skip-build — использую готовый индекс)"
@@ -28,8 +28,23 @@ fi
 
 echo "── 2/4 Копирование PDF в статику (frontend/public/norms)"
 mkdir -p frontend/public/norms
-find "СНиП РК" -type f -iname '*.pdf' -not -name '.DS_Store' | while IFS= read -r pdf; do
-  cp "$pdf" frontend/public/norms/
+find norms -type f -iname '*.pdf' -not -name '.DS_Store' | while IFS= read -r pdf; do
+  name="$(basename "$pdf")"
+  size_mb="$(du -m "$pdf" | cut -f1)"
+  # Лимит Cloudflare Pages — 25 МиБ на файл: большие PDF пересжимаем (deflate+garbage)
+  if [ "$size_mb" -ge 25 ]; then
+    "$PY" - "$pdf" "frontend/public/norms/$name" <<'PYEOF'
+import sys, os, fitz
+src, dst = sys.argv[1], sys.argv[2]
+d = fitz.open(src)
+d.save(dst + ".tmp", deflate=True, deflate_images=True, deflate_fonts=True, garbage=4, clean=True)
+d.close()
+os.replace(dst + ".tmp", dst)
+print(f"    recompressed: {os.path.getsize(src)/1e6:.0f}MB -> {os.path.getsize(dst)/1e6:.0f}MB")
+PYEOF
+  else
+    cp "$pdf" "frontend/public/norms/$name"
+  fi
 done
 
 R2_AVAILABLE=0
@@ -39,7 +54,7 @@ fi
 
 if [ "$SKIP_R2" -eq 0 ] && [ "$R2_AVAILABLE" -eq 1 ]; then
   echo "── 3/4 Загрузка PDF в R2 (snip-norms)"
-  find "СНиП РК" -type f -iname '*.pdf' -not -name '.DS_Store' | while IFS= read -r pdf; do
+  find norms -type f -iname '*.pdf' -not -name '.DS_Store' | while IFS= read -r pdf; do
     name="$(basename "$pdf")"
     echo "   ↑ $name"
     npx wrangler r2 object put "snip-norms/$name" --file "$pdf" --remote --content-type application/pdf >/dev/null

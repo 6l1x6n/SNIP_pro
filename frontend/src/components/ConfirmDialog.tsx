@@ -39,22 +39,22 @@ export function ConfirmDialog({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
       <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm" onClick={onCancel} />
-      <div className="relative w-full max-w-sm bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
+      <div className="relative w-full max-w-sm card shadow-xl overflow-hidden animate-[popIn_.18s_ease-out]">
         <div className="px-5 py-4">
-          <h3 id="confirm-title" className="font-semibold text-slate-900 text-sm">{title}</h3>
-          <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">{message}</p>
+          <h3 id="confirm-title" className="font-semibold text-slate-900 dark:text-white text-sm">{title}</h3>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1.5 leading-relaxed">{message}</p>
         </div>
-        <div className="px-5 py-3 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-2">
+        <div className="px-5 py-3 bg-slate-50 dark:bg-slate-800/60 border-t border-slate-100 dark:border-slate-800 flex items-center justify-end gap-2">
           <button
             ref={cancelRef}
             onClick={onCancel}
-            className="px-4 py-2 rounded-xl bg-white border border-slate-200 text-sm text-slate-700 hover:bg-slate-50"
+            className="btn btn-md btn-secondary"
           >
             {cancelLabel}
           </button>
           <button
             onClick={onConfirm}
-            className={`px-4 py-2 rounded-xl text-sm font-medium text-white ${danger ? 'bg-red-600 hover:bg-red-700' : 'bg-slate-900 hover:bg-black'}`}
+            className={`btn btn-md text-white ${danger ? 'bg-red-600 hover:bg-red-700' : 'bg-slate-900 dark:bg-white dark:text-slate-900 hover:bg-slate-700 dark:hover:bg-slate-200'}`}
           >
             {confirmLabel}
           </button>
