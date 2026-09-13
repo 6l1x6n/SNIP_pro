@@ -145,14 +145,22 @@ export function isSemanticMode(): boolean {
 let bundlePromise: Promise<IndexBundle> | null = null;
 
 export function loadIndex(base = "/index"): Promise<IndexBundle> {
+  // При неудаче промис сбрасывается: следующий вызов ретраит загрузку,
+  // а не ломает поиск до перезагрузки страницы.
   if (bundlePromise) return bundlePromise;
   bundlePromise = (async () => {
+    // Манифест всегда свежий (no-store): после ребилда юзер сразу получает новый индекс.
+    const mr = await fetch(`${base}/manifest.json`, { cache: "no-store" });
+    if (!mr.ok) throw new Error(`index: manifest.json → HTTP ${mr.status}`);
+    const manifest = (await mr.json()) as Manifest;
+    if (manifest.version !== 2) throw new Error(`index: неподдерживаемая версия манифеста ${manifest.version}`);
+    // Остальные артефакты кэш-бастим builtAt — CDN не смешает файлы разных сборок.
+    const v = encodeURIComponent(manifest.builtAt || "0");
     const j = async <T>(p: string): Promise<T> => {
-      const r = await fetch(`${base}/${p}`);
+      const r = await fetch(`${base}/${p}?v=${v}`);
       if (!r.ok) throw new Error(`index: ${p} → HTTP ${r.status}`);
       return r.json() as Promise<T>;
     };
-    const manifest = await j<Manifest>("manifest.json");
     const [docs, bm25, synonyms] = await Promise.all([
       j<DocInfo[]>("docs.json"),
       j<Bm25Index>("bm25.json"),
@@ -172,7 +180,7 @@ export function loadIndex(base = "/index"): Promise<IndexBundle> {
     const nVecShards = manifest.shards?.vectors ?? 0;
     const shardBufs = await Promise.all(
       Array.from({ length: Math.max(1, nVecShards) }, (_, k) =>
-        fetch(`${base}/${nVecShards === 0 ? "vectors.bin" : `vectors_${k}.bin`}`).then((r) => {
+        fetch(`${base}/${nVecShards === 0 ? "vectors.bin" : `vectors_${k}.bin`}?v=${v}`).then((r) => {
           if (!r.ok) throw new Error(`index: vectors_${k}.bin → HTTP ${r.status}`);
           return r.arrayBuffer();
         })
@@ -200,9 +208,13 @@ export function loadIndex(base = "/index"): Promise<IndexBundle> {
       sOff += s.scales.byteLength / 4;
       dOff += s.data.byteLength;
     }
+    if (manifest.dim && dim !== manifest.dim) throw new Error(`index: dim векторов ${dim} ≠ манифесту ${manifest.dim}`);
     if (totalCount !== chunks.length) throw new Error(`индекс рассинхронизирован: векторов ${totalCount}, чанков ${chunks.length}`);
     return { manifest, docs, chunks, bm25, synonyms, dim, count: totalCount, scales, int8 };
-  })();
+  })().catch((e) => {
+    bundlePromise = null;
+    throw e;
+  });
   return bundlePromise;
 }
 

@@ -322,7 +322,7 @@ export async function askAI(query: string, mode: 'fast' | 'deep', chunkIds: stri
   const r = await authFetch(`${WORKER_BASE}/api/ask`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, mode, candidates: chunkIds.map(Number).slice(0, 24) }),
+    body: JSON.stringify({ query, mode, candidates: chunkIds.map(Number).slice(0, 32) }),
     signal,
   })
   if (r.status === 402) {
@@ -377,7 +377,7 @@ export async function askFollowUp(
     body: JSON.stringify({
       query,
       mode: 'deep',
-      candidates: chunkIds.map(Number).slice(0, 24),
+      candidates: chunkIds.map(Number).slice(0, 32),
       followUp: true,
       history: history.slice(-2).map((h) => ({ q: h.q.slice(0, 300), a: h.a.slice(0, 800) })),
     }),

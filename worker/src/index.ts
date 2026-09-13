@@ -60,7 +60,19 @@ export const PACKS: Record<string, { label: string; price: number; credits: numb
 
 const CORS_HEADERS = (env: Env, origin: string | null): Record<string, string> => {
   const allowed = env.ALLOWED_ORIGINS.split(",").map((s) => s.trim());
-  const ok = origin && (allowed.includes(origin) || allowed.some((a) => a.endsWith("*") && origin.startsWith(a.slice(0, -1))));
+  // «https://*.pages.dev» — звёздочка в начале хоста: матчим через regex,
+  // а не endsWith("*") (паттерн кончается на «v», старый путь никогда не срабатывал).
+  const ok =
+    origin &&
+    (allowed.includes(origin) ||
+      allowed.some((a) => {
+        if (!a.includes("*")) return false;
+        if (a.endsWith("*")) return origin.startsWith(a.slice(0, -1));
+        const re = new RegExp(
+          "^" + a.split("*").map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".+") + "$"
+        );
+        return re.test(origin);
+      }));
   return {
     "Access-Control-Allow-Origin": ok ? origin! : allowed[0] ?? "*",
     "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Device-Id",
@@ -159,6 +171,7 @@ interface CachedIndex {
 let indexCache: Promise<CachedIndex> | null = null;
 
 function loadIndex(env: Env): Promise<CachedIndex> {
+  // При неудаче кэш сбрасывается: следующий вызов ретраит, а не ломает изолят до рестарта.
   if (!indexCache) {
     const p = (async (): Promise<CachedIndex> => {
       const base = env.INDEX_BASE_URL.replace(/\/$/, "");
@@ -166,21 +179,33 @@ function loadIndex(env: Env): Promise<CachedIndex> {
       const manifestRes = await fetch(`${base}/manifest.json`, { cache: "no-store" });
       const manifest = manifestRes.ok
         ? ((await manifestRes.json()) as CachedIndex)
-        : ({ shards: { vectors: 1, chunks: 1 } } as CachedIndex);
-      const nChunkShards = manifest.shards?.chunks ?? 1;
-      const nVecShards = manifest.shards?.vectors ?? 1;
+        : ({} as CachedIndex);
+      // Чанки: шарды по manifest.shards.chunks или классический одиночный chunks.json
+      const nChunkShards = manifest.shards?.chunks ?? 0;
+      const nVecShards = manifest.shards?.vectors ?? 0;
       const [chunks, ...binBufs] = await Promise.all([
         (async () => {
+          if (nChunkShards === 0) {
+            const r = await fetch(`${base}/chunks.json`, { cache: "no-store" });
+            if (!r.ok) throw new Error(`chunks.json → HTTP ${r.status}`);
+            return r.json() as Promise<CachedIndex["chunks"]>;
+          }
           const parts = await Promise.all(
             Array.from({ length: nChunkShards }, (_, k) =>
-              fetch(`${base}/chunks_${k}.json`, { cache: "no-store" })        .then((r) => r.json() as Promise<CachedIndex["chunks"]>)
+              fetch(`${base}/chunks_${k}.json`, { cache: "no-store" }).then((r) => {
+                if (!r.ok) throw new Error(`chunks_${k}.json → HTTP ${r.status}`);
+                return r.json() as Promise<CachedIndex["chunks"]>;
+              })
             )
           );
           return ([] as CachedIndex["chunks"]).concat(...parts);
         })(),
-        ...Array.from({ length: nVecShards }, (_, k) =>
-          fetch(k === 0 && nVecShards === 1 ? `${base}/vectors.bin` : `${base}/vectors_${k}.bin`, { cache: "no-store" }).then(
-            (r) => r.arrayBuffer()
+        ...Array.from({ length: Math.max(1, nVecShards) }, (_, k) =>
+          fetch(nVecShards === 0 ? `${base}/vectors.bin` : `${base}/vectors_${k}.bin`, { cache: "no-store" }).then(
+            (r) => {
+              if (!r.ok) throw new Error(`vectors_${k}.bin → HTTP ${r.status}`);
+              return r.arrayBuffer();
+            }
           )
         ),
       ]);
@@ -206,10 +231,14 @@ function loadIndex(env: Env): Promise<CachedIndex> {
         sOff += s.scales.byteLength / 4;
         dOff += s.data.byteLength;
       }
+      if (manifest.dim && dim !== manifest.dim) throw new Error(`dim векторов ${dim} ≠ манифесту ${manifest.dim}`);
       if (totalCount !== chunks.length) throw new Error("vectors не совпадает с chunks");
       return { dim, count: totalCount, scales, int8, chunks };
     })();
-    indexCache = p;
+    indexCache = p.catch((e) => {
+      indexCache = null;
+      throw e;
+    });
   }
   return indexCache;
 }
@@ -1578,10 +1607,11 @@ const SETTING_DEFS: Record<string, { def: string; min: number; max: number }> = 
   budget_cerebras: { def: "350", min: 0, max: 10000000 },
   budget_openrouter: { def: "40", min: 0, max: 10000000 },
   budget_deepseek: { def: "150", min: 0, max: 10000000 },
-  "budget_mistral-chat": { def: "150", min: 0, max: 10000000 },
-  "budget_cohere-chat": { def: "150", min: 0, max: 10000000 },
+  // Ключи без дефисов: llmBudgetCap ищет budget_<provider с "_" вместо "-">
+  budget_mistral_chat: { def: "150", min: 0, max: 10000000 },
+  budget_cohere_chat: { def: "150", min: 0, max: 10000000 },
   budget_custom: { def: "1000000", min: 0, max: 10000000 },
-  "budget_workers-ai": { def: "800", min: 0, max: 10000000 },
+  budget_workers_ai: { def: "800", min: 0, max: 10000000 },
   budget_zen: { def: "100", min: 0, max: 10000000 },
   budget_pollinations: { def: "300", min: 0, max: 10000000 },
   budget_jina_rerank: { def: "300", min: 0, max: 10000000 },
@@ -3482,7 +3512,7 @@ export default {
         let rerankModel = "none";
         let candidatesCount = 0;
         try {
-          // Клиент присылает до 24 кандидатов (hybrid top); cross-encoder выбирает лучшие top-N.
+          // Клиент присылает до 32 кандидатов (hybrid top + rewrite-расширение); cross-encoder выбирает лучшие top-N.
           const candRaw = Array.isArray(body.candidates) && body.candidates.length ? body.candidates : body.chunkIds;
           if (Array.isArray(candRaw) && candRaw.length) {
             ids = candRaw.map(Number).filter((i: number) => i >= 0 && i < idx.count).slice(0, 32);
@@ -4130,7 +4160,9 @@ export default {
 
       return json({ error: "not found" }, 404, cors);
     } catch (e: any) {
-      return json({ error: e?.message ?? "internal" }, 500, cors);
+      // Наружу — generic: сырые сообщения D1/провайдеров не утекают клиенту.
+      console.error("unhandled /api error:", e?.stack || e?.message || e);
+      return json({ error: "internal_error" }, 500, cors);
     }
   },
 };
