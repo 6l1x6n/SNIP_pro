@@ -355,6 +355,8 @@ def main():
     ap.add_argument("--reuse-vectors", action="store_true",
                     help="переиспользовать кэш эмбеддингов (.index_cache/) по sha256 текста чанка — "
                          "пересборка ради values.json/новых документов не тратит квоту API")
+    ap.add_argument("--no-tables", action="store_true",
+                    help="не извлекать таблицы (page.find_tables) в отдельные чанки ty=table")
     args = ap.parse_args()
 
     from pipeline.extractor import PDFExtractor
@@ -422,6 +424,8 @@ def main():
                 print(f"    ⚠️ пустой документ — пропуск")
                 continue
             extracted = make_doc(doc_info["title"], text, ext.lstrip("."))
+        if args.no_tables:
+            extracted.pages = [p for p in extracted.pages if not getattr(p, "table", False)]
         raw_chunks = chunker.chunk_extracted(extracted)
         d_idx = len(docs)
         docs.append({
@@ -445,6 +449,9 @@ def main():
 
     if not chunks:
         print("Нет чанков — положи файлы (pdf/docx/doc/txt) в norms/ или включи --with-demo"); sys.exit(1)
+
+    n_tables = sum(1 for c in chunks if c["ty"] == "table")
+    print(f"чанков: {len(chunks)}, из них таблиц (ty=table): {n_tables}")
 
     # ---- 1.5. Числовые требования (values.json) — без API, только regex ----
     sys.path.insert(0, str(ROOT / "scripts"))

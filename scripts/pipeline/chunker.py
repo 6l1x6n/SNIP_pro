@@ -46,6 +46,13 @@ class SNIPChunker:
         for p in pages_text:
             page_num = p["page"]
             text = p["text"]
+            # Псевдо-страница таблицы (find_tables): сразу в чанки type=table,
+            # с подписью «Таблица N» в paragraph, не смешивается с прозой
+            if p.get("ty") == "table":
+                cap = re.search(r"(?:Таблица|Кесте)\s+(\d+(?:\.\d+)*)", text[:120], re.IGNORECASE)
+                para = f"Таблица {cap.group(1)}" if cap else None
+                raw_blocks.extend(self._split_long(text, page_num, current_chapter, current_section, para, type_hint="table"))
+                continue
             # Split by lines, accumulate paragraph
             lines = text.split("\n")
             acc = ""
@@ -154,5 +161,6 @@ class SNIPChunker:
 
     def chunk_extracted(self, extracted) -> List[RawChunk]:
         """Wrapper for ExtractedDoc"""
-        pages = [{"page": p.page_num, "text": p.text} for p in extracted.pages]
+        pages = [{"page": p.page_num, "text": p.text, "ty": "table" if p.table else "paragraph"}
+                 for p in extracted.pages]
         return self.chunk(pages, {"title": extracted.title})

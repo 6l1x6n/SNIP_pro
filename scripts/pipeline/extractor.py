@@ -10,6 +10,7 @@ class PageText:
     text: str
     has_text: bool
     bbox: Optional[dict] = None
+    table: bool = False  # псевдо-страница: структурированный текст таблицы
 
 @dataclass
 class ExtractedDoc:
@@ -31,6 +32,7 @@ class PDFExtractor:
         doc = fitz.open(str(pdf_path))
         pages: List[PageText] = []
         total_text_len = 0
+        table_pages: List[PageText] = []  # таблицы в КОНЦЕ списка страниц — не сдвигают чанки прозы
         for i, page in enumerate(doc):
             # Try blocks sorted by reading order (y, x) for better paragraph preservation
             blocks = page.get_text("blocks")
@@ -58,7 +60,11 @@ class PDFExtractor:
                 except:
                     bbox = None
             pages.append(PageText(page_num=i+1, text=text, has_text=has_text, bbox=bbox))
+            if has_text:
+                table_pages.extend(self._page_tables(page, page_num=i + 1, page_text=text))
         doc.close()
+
+        pages.extend(table_pages)
 
         # heuristic: scanned if <50% pages have text or avg <80 chars (more sensitive than 30%/100)
         scanned_ratio = sum(1 for p in pages if p.has_text) / max(1, len(pages))
@@ -75,6 +81,42 @@ class PDFExtractor:
 
         title = meta.get("title") or pdf_path.stem.replace("_", " ")
         return ExtractedDoc(title=title, pages=pages, total_pages=len(pages), is_scanned=is_scanned, metadata=meta)
+
+    CAPTION_RE = re.compile(r"(Таблица|Кесте)\s+(\d+(?:\.\d+)*)", re.IGNORECASE)
+
+    def _page_tables(self, page, page_num: int, page_text: str) -> List[PageText]:
+        """find_tables → псевдо-страницы со структурированным текстом таблиц.
+        Проза страницы НЕ трогается (тексты чанков и кэш эмбеддингов стабильны),
+        таблица дополнительно попадает в индекс строками «ячейка | ячейка»."""
+        out: List[PageText] = []
+        try:
+            tabs = page.find_tables()
+        except Exception:
+            return out
+        for ti, tab in enumerate(tabs.tables):
+            try:
+                rows = tab.extract()
+            except Exception:
+                continue
+            if not rows or len(rows) < 2 or max(len(r) for r in rows) < 2:
+                continue
+            cells: List[List[str]] = []
+            for r in rows:
+                clean = [norm_cell(c) for c in r]
+                if any(clean):
+                    cells.append(clean)
+            if len(cells) < 2:
+                continue
+            width = max(len(r) for r in cells)
+            lines = [" | ".join((r + [""] * (width - len(r)))[:width]) for r in cells]
+            body = "\n".join(lines)
+            if len(body) < 30:
+                continue
+            m = self.CAPTION_RE.search(page_text)
+            caption = f"Таблица {m.group(2)}. " if m else ""
+            header = "[Таблица] " + caption + "\n"
+            out.append(PageText(page_num=page_num, text=header + body, has_text=True, table=True))
+        return out
 
     def extract_with_ocr(self, pdf_path: Path, lang: str = "rus+eng") -> ExtractedDoc:
         """Fallback: если скан - используем OCR (требует tesseract)"""
@@ -118,3 +160,10 @@ class PDFExtractor:
             result["type"] = "table"
             result["table_num"] = m3.group(1)
         return result
+
+
+def norm_cell(v) -> str:
+    """Ячейка таблицы → однострочный текст без переносов и двойных пробелов."""
+    if v is None:
+        return ""
+    return re.sub(r"\s+", " ", str(v)).strip()

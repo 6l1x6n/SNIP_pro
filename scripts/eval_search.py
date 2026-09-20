@@ -188,6 +188,15 @@ class Embedder:
             )
             d = json.loads(urllib.request.urlopen(req, timeout=30).read())
             vec = d["data"][0]["embedding"]
+        elif provider == "mistral":
+            body = {"model": self.model, "input": [q]}
+            req = urllib.request.Request(
+                "https://api.mistral.ai/v1/embeddings",
+                data=json.dumps(body).encode(),
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+            )
+            d = json.loads(urllib.request.urlopen(req, timeout=30).read())
+            vec = d["data"][0]["embedding"]
         else:
             raise RuntimeError(f"провайдер {provider} не поддержан в eval")
         if not vec:
