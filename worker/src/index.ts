@@ -128,7 +128,7 @@ const b64url = (data: ArrayBuffer | string): string => {
 const b64urlDecode = (s: string): string =>
   atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice(0, (4 - (s.length % 4)) % 4));
 
-async function signJwt(payload: Record<string, unknown>, secret: string, ttlSec = 60 * 60 * 24 * 7): Promise<string> {
+export async function signJwt(payload: Record<string, unknown>, secret: string, ttlSec = 60 * 60 * 24 * 7): Promise<string> {
   const header = b64url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
   const body = b64url(JSON.stringify({ ...payload, exp: Math.floor(Date.now() / 1000) + ttlSec }));
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
@@ -136,13 +136,13 @@ async function signJwt(payload: Record<string, unknown>, secret: string, ttlSec 
   return `${header}.${body}.${b64url(sig)}`;
 }
 
-async function verifyJwt(token: string, secret: string): Promise<Record<string, unknown> | null> {
+export async function verifyJwt(token: string, secret: string): Promise<Record<string, unknown> | null> {
   const r = await verifyJwtWithReason(token, secret);
   return r.payload;
 }
 
 /** Проверка JWT с причиной отказа — чтобы фронт различал expired vs invalid и не ронял сессию зря. */
-async function verifyJwtWithReason(
+export async function verifyJwtWithReason(
   token: string,
   secret: string
 ): Promise<{ payload: Record<string, unknown> | null; reason: "expired" | "invalid" | null }> {
@@ -1717,7 +1717,7 @@ async function getLimits(env: Env): Promise<EffectiveLimits> {
   };
 }
 
-async function getCreditsState(env: Env, subject: string, isUser: boolean): Promise<CreditsState> {
+export async function getCreditsState(env: Env, subject: string, isUser: boolean): Promise<CreditsState> {
   const period = periodKey(isUser);
   const [usageRow, balRow, plan, lim] = await Promise.all([
     env.DB.prepare("SELECT count FROM usage WHERE day=? AND subject=?").bind(period, subject).first<{ count: number }>(),
@@ -1739,7 +1739,7 @@ async function getCreditsState(env: Env, subject: string, isUser: boolean): Prom
 interface ChargeSplit { daily: number; balance: number }
 
 /** Списывает cost кредитов: сначала периодный лимит (час для юзеров / день для гостей), затем накопительный баланс. */
-async function chargeHybrid(
+export async function chargeHybrid(
   env: Env,
   subject: string,
   isUser: boolean,
@@ -1798,7 +1798,7 @@ async function chargeHybrid(
 }
 
 /** Возврат списания при внутренней ошибке (восстанавливает точный split). */
-async function refundCharge(env: Env, subject: string, isUser: boolean, cost: number, split: ChargeSplit, kind: string): Promise<void> {
+export async function refundCharge(env: Env, subject: string, isUser: boolean, cost: number, split: ChargeSplit, kind: string): Promise<void> {
   const period = periodKey(isUser);
   const stmts: D1PreparedStatement[] = [];
   if (split.daily > 0) {
@@ -1889,7 +1889,7 @@ async function rewriteCacheKey(kind: string, query: string, history?: Array<{ q:
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-function parseRewriteJson(raw: string, query: string): RewriteResult {
+export function parseRewriteJson(raw: string, query: string): RewriteResult {
   let text = stripThink(String(raw ?? "").trim());
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
@@ -2349,7 +2349,7 @@ async function ensureLlmBudgetTable(env: Env): Promise<void> {
   }
 }
 
-function llmBudgetCap(values: Record<string, string>, provider: string): number {
+export function llmBudgetCap(values: Record<string, string>, provider: string): number {
   const def = LLM_BUDGET_DEFAULTS[provider] ?? 100;
   // Ключ настройки: дефисы id → подчёркивания (budget_groq-alt → budget_groq_alt).
   const raw = values[`budget_${provider.replace(/-/g, "_")}`];
