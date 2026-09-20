@@ -14,7 +14,7 @@
 
 ```
 Официальный источник (adilet.zan.kz) → PDF (PyMuPDF / OCR) → scripts/build_index.py
-→ chunker 2800 зн. / overlap 600 (не режет пункт) → embeddings Cohere
+→ chunker 2800 зн. / overlap 600 (не режет пункт) → таблицы `page.find_tables()` чанками `ty=table` → embeddings Mistral `mistral-embed`
 embed-multilingual-v3.0 1024d int8-per-vector → статический шардированный индекс
 frontend/public/index/ (manifest v2, chunks_0..7 + vectors_0..10 ≤4 МиБ, bm25.json,
 values.json 7644 факта, builtAt-версионирование) → гибридный поиск В БРАУЗЕРЕ
@@ -48,7 +48,7 @@ D1 `embed_cache` (30 дней, ключ по builtAt): повторные воп
 1. **Источник** `scripts/check_updates.py` — diff текущей `norms/` с adilet.zan.kz; новые/изменённые PDF раскладываются вручную (полный автомат сознательно не делается: кривой парсинг отравит индекс), метаданные — `norms/meta.json`.
 2. **Extractor** `scripts/pipeline/extractor.py` `fitz` `get_text(flags=TEXTFLAGS_TEXT)`, эвристика скана `scanned_ratio<0.3`, fallback `pytesseract rus+kaz+eng` dpi200 (build-time).
 3. **Chunker** `scripts/pipeline/chunker.py` `MAX_CHARS=2800` overlap `600`, режет по `^\d+(\.\d+)*` `Глава|Раздел|Таблица`, не режет пункт.
-4. **Indexer** `scripts/build_index.py` — эмбед-каскад `gemini(768) → jina/voyage/cohere/mistral(1024)` (ключи в корневом `.env`), int8-per-vector квантование, `values_extract.py` → `values.json`; выход: `chunks.json/vectors.bin + manifest/bm25/docs/synonyms.json`.
+4. **Indexer** `scripts/build_index.py` — эмбед-каскад `gemini(768) → jina/voyage/cohere/mistral(1024)` (ключи в корневом `.env`), int8-per-vector квантование, `values_extract.py` → `values.json`; выход: `chunks.json/vectors.bin + manifest/bm25/docs/synonyms.json`. Хирургические операции без пере-извлечения PDF: `add_table_chunks.py` (таблицы, `--provider` — смена провайдера) + `rebuild_text_index.py` (bm25/values/builtAt); PDF гоняются в subprocess-пуле с таймаутом — зависший скан не топит сборку.
 5. **Шардирование** `scripts/shard_index.py` — режет монолиты на шарды ≤4 МиБ (лимит Pages 25 МиБ), пишет `manifest.shards`; в `rebuild.sh` встроен.
 6. **Поиск** `frontend/src/search/engine.ts` — BM25 по `bm25.json` + косинус int8-векторов (query-вектор — Worker `/api/embed` по провайдеру из манифеста) + RRF `k=60` → `0.45/0.55` (semantic) или `0.6/0.4` → `relevance_percent 10-98`; при 429 — деградация в BM25-only, 402 пробрасывается.
 7. **Ответ** `worker/src/index.ts /api/ask` — rerank-каскад, роутер сложности, prompt v2 + второй проход; values-фактоиды отвечаются до LLM бесплатно.
@@ -63,7 +63,7 @@ D1 `embed_cache` (30 дней, ключ по builtAt): повторные воп
 | **Фронт** | React 19 + Vite + Tailwind 3.4 + TypeScript | `frontend/package.json`, `vite.config.ts` |
 | **Поиск** | Гибрид в браузере: BM25 + int8-векторы + RRF | `frontend/src/search/engine.ts` |
 | **Индекс** | Статический, шардированный (≤4 МиБ), int8-per-vector | `frontend/public/index/manifest.json` v2, 40 931 чанк × 1024d |
-| **Эмбеддинги** | Cohere `embed-multilingual-v3.0` 1024d (манифест-управляемый каскад) | `worker/src/index.ts` `embedQueryFresh`, `scripts/pipeline/provider.py` (build-time) |
+| **Эмбеддинги** | Mistral `mistral-embed` 1024d (манифест-управляемый каскад; был Cohere — исчерпана месячная квота trial) | `worker/src/index.ts` `embedQueryFresh`, `scripts/pipeline/provider.py` (build-time) |
 | **API** | Cloudflare Worker (1 файл) + D1 | `worker/src/index.ts`, `worker/schema.sql` |
 | **LLM** | Каскад: Groq → Zen → Pollinations → Gemini → Cerebras → OpenRouter → DeepSeek → Mistral → Cohere → workers-ai | `worker/src/index.ts` `llmLinks`, бюджеты `llm_budget` |
 | **Rerank** | Каскад: Voyage `rerank-2` → Cohere `rerank-multilingual-v3.0` → Jina → LLM-listwise | `worker/src/index.ts` `rerankLinks` |

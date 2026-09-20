@@ -15,7 +15,7 @@
 ```
 adilet.zan.kz / нормативка → norms/*.pdf → scripts/build_index.py
   → chunker (2800 зн., overlap 600, не режет пункт)
-  → embeddings Cohere embed-multilingual-v3.0 1024d (int8-per-vector)
+  → embeddings Mistral mistral-embed 1024d (int8-per-vector; был Cohere — квота, смена через manifest)
   → статический шардированный индекс frontend/public/index/
       (manifest.json v2, chunks_0..7.json, vectors_0..10.bin ≤4 МиБ,
        bm25.json, values.json — 7644 факта, builtAt-версионирование)
@@ -26,11 +26,11 @@ adilet.zan.kz / нормативка → norms/*.pdf → scripts/build_index.py
   → ответ с цитатой, пунктом, страницей, статусом (No source → No claim)
 ```
 
-- **Query-эмбеддинги** считает Worker `/api/embed` по провайдеру из манифеста индекса (сейчас Cohere 1024d; каскад jina → voyage → cohere → mistral → gemini), D1-кэш `embed_cache` на 30 дней с ключом по `builtAt`.
+- **Query-эмбеддинги** считает Worker `/api/embed` по провайдеру из манифеста индекса (сейчас Mistral 1024d; каскад jina → voyage → cohere → mistral → gemini), D1-кэш `embed_cache` на 30 дней с ключом по `builtAt`.
 - **Деградация:** при 429/5xx провайдера поиск честно уходит в BM25-only с плашкой «текстовый поиск»; 402 (нет кредитов) не деградирует, а пробрасывается.
 - **Values-карточки:** фактоиды («ширина коридора ≥1,4 м») отвечаются детерминированно из `values.json` БЕЗ LLM и списания (0⚡), LLM получает проверенные значения как контекст.
 - **Смарт-контур (прод Worker, 10.09.2026):** понимание запроса (`/api/rewrite`, D1-кэш 30д) → расширение пула кандидатов BM25/векторными хитами переформулировок (до 32) → reranking каскадом → prompt v2 (числа строго из цитаты, сравнения построчно) + второй проход при «не найдено». Флаги в админке: `smart_rewrite`, `smart_rerank`, `smart_second_pass`. Метрики за сутки: `GET /api/admin/health → smart{}`.
-- **Линейка качества:** `scripts/eval_search.py` + `scripts/eval/golden.jsonl` (106 кейсов; 46 ручных + 60 из values-фактов). Базовый замер 09.2026: Hit@1 50.0% / Hit@3 72.6% / MRR 0.630; слабое место — kz-запросы (Hit@1 0% на 5 кейсах).
+- **Линейка качества:** `scripts/eval_search.py` + `scripts/eval/golden.jsonl` (106 кейсов; 46 ручных + 60 из values-фактов). Замер 09.2026 после kz-фикса и таблиц: Hit@1 54.7% / Hit@3 75.5% / MRR 0.666 (база до: 50.0/72.6/0.630); kz-кейсы Hit@3 80% (было 0%).
 - **Паритет токенизатора:** TS-токенизатор `frontend/src/utils/stem.ts` — ручной порт Python из `scripts/build_index.py`; паритет гонится тестами (`npm test`, фикстура из реальных чанков: `npm run gen:fixture`).
 
 **Принцип: No source → No claim.** Цитата проверяется дословно; если релевантность низкая — «В доступной нормативной базе точного требования не найдено».
@@ -123,7 +123,7 @@ scripts/
 
 ## Замена компонентов (модульность)
 
-- **Эмбеддинги:** провайдер query-векторов берётся из `manifest.json` (`provider`/`model`) — Worker `/embed` подхватывает jina/voyage/cohere/mistral/gemini автоматически. Смена индексного провайдера = пересборка `build_index.py` (dim 1024; для 768d gemini — пересборка всего индекса + новая `builtAt`).
+- **Эмбеддинги:** провайдер query-векторов берётся из `manifest.json` (`provider`/`model`) — Worker `/embed` подхватывает jina/voyage/cohere/mistral/gemini автоматически. Смена провайдера без пере-извлечения PDF: `python3 -u scripts/add_table_chunks.py --provider mistral` — пере-эмбеддирует тексты готовых чанков (без `--provider` — только таблицы текущим провайдером). Перед деплоем индекса нового провайдера выставь воркеру его секрет (`wrangler secret put MISTRAL_API_KEY`).
 - **LLM:** каскад в `worker/src/index.ts` (`llmLinks` + `LLM_BUDGET_DEFAULTS`); дневные бюджеты и флаги — в настройках админки, без деплоя.
 - **Reranker:** каскад `rerankLinks` (Voyage → Cohere → Jina → LLM-listwise → workers-ai), включается флагом `smart_rerank`.
 - **Источник:** `scripts/check_updates.py` (diff с adilet) + ручная раскладка в `norms/` (`meta.json`) — полный автомат сознательно не делается: кривой парсинг отравит индекс.
@@ -133,12 +133,13 @@ scripts/
 
 ## TODO / ограничения
 
-- [ ] kz-запросы: Hit@1 0% на kz-подмножестве golden — нужны kz-синонимы и kz-путь rewrite (главный продуктовый рычаг)
-- [ ] Таблицы (`camelot`/`tabula`) — отдельный `type=table` чанк
+- [x] ~~kz-запросы~~: kz-токенизатор + kz↔ru синонимы + kz-детект в rewrite (Hit@3 0→80% на kz-подмножестве); дальше —_live_ проверка kz→ru rewrite после деплоя воркера
+- [x] ~~Таблицы~~: `page.find_tables()` → чанки `ty=table` (3845 шт.), приложение — `scripts/add_table_chunks.py`
 - [ ] i18n kz интерфейса (сейчас ru, ~1500 строк захардкоженных строк)
-- [ ] Код-сплиттинг + ErrorBoundary (pdfjs-dist в основном бандле)
+- [x] ~~Код-сплиттинг + ErrorBoundary~~: PdfViewerModal ленивая (main 514→483 kB), boundaries root/поиск/PDF
 - [ ] Пагинация чанков в PDF viewer с подсветкой bbox
-- [ ] TypeScript: снять `@ts-nocheck` с 12 файлов, `strict: true`
+- [ ] TypeScript: осталось 7 файлов с `@ts-nocheck` (большие вьюхи), `strict: false` во фронтенде
+- [ ] kz Hit@1 на golden kz-подмножестве 20% (n=5) — после деплоя замерить с live rewrite kz→ru
 
 ---
 
