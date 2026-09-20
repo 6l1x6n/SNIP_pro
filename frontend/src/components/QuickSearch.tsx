@@ -1,9 +1,5 @@
-// @ts-nocheck
 import { useState, useEffect, useRef } from 'react'
-import { useAuth } from '../context/AuthContext'
 import { getRecentQueries, getTrendingQueries } from '../utils/analytics'
-import { API_BASE, authFetch } from '../utils/api'
-import { useToast } from './Toast'
 import { Icon } from './Icon'
 import { ListRow } from './ListRow'
 
@@ -18,8 +14,6 @@ interface QuickSearchProps {
  * Shows recent + trending queries, type to search.
  */
 export function QuickSearch({ open, onClose, onSearch }: QuickSearchProps) {
-  const { user } = useAuth()
-  const { showToast } = useToast()
   const [query, setQuery] = useState('')
   const [suggestions, setSuggestions] = useState<any[]>([])
   const [loading, setLoading] = useState(false)

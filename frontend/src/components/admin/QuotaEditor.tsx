@@ -1,4 +1,3 @@
-// @ts-nocheck — как и остальные views, типы правим инкрементально
 import { useState } from 'react'
 import { saveAdminSetting } from '../../hooks/useAdmin'
 import { Icon } from '../Icon'

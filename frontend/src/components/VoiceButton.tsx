@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { useVoiceSearch } from '../hooks/useVoiceSearch'
 import { useToast } from './Toast'
 import { Icon } from './Icon'

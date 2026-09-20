@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react'
 import { useAuth } from './context/AuthContext'
 import { LoginForm, RegisterForm } from './components/AuthForms'
 import { useToast } from './components/Toast'
@@ -23,7 +23,8 @@ import { useTheme } from './context/ThemeContext'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { ShortcutsModal } from './components/ShortcutsModal'
 import { QuickSearch } from './components/QuickSearch'
-import { PdfViewerModal } from './components/PdfViewerModal'
+import { ErrorBoundary } from './components/ErrorBoundary'
+const PdfViewerModal = lazy(() => import('./components/PdfViewerModal').then(m => ({ default: m.PdfViewerModal })))
 import { HistorySidebar } from './components/HistorySidebar'
 import { HistorySearchModal } from './components/HistorySearchModal'
 import { trackSearch } from './utils/analytics'
@@ -329,6 +330,7 @@ export default function App() {
         <div className="flex-1 min-w-0 flex flex-col">
       {/* Tab content */}
       {tab === 'search' && (
+        <ErrorBoundary label="поиск">
         <SearchView
           query={search.query} setQuery={search.setQuery}
           mode={search.mode} setMode={search.setMode}
@@ -354,6 +356,7 @@ export default function App() {
           openPdf={openPdf}
           searchInputRef={searchInputRef}
         />
+        </ErrorBoundary>
       )}
 
       {tab === 'docs' && (
@@ -401,7 +404,9 @@ export default function App() {
         onClose={() => setHistorySearchOpen(false)}
       />
       {pdfViewer && (
-        <PdfViewerModal
+        <ErrorBoundary label="PDF-просмотр" inline>
+          <Suspense fallback={null}>
+          <PdfViewerModal
           key={`${pdfViewer.docId}:${pdfViewer.page ?? 1}:${(pdfViewer.quote ?? '').length}:${(pdfViewer.quote ?? '').slice(0, 64)}`}
           docId={pdfViewer.docId}
           initialPage={pdfViewer.page ?? 1}
@@ -413,7 +418,9 @@ export default function App() {
             if (user) goToProfile('billing')
             else { setAuthMode('register'); setShowAuth(true) }
           }}
-        />
+          />
+          </Suspense>
+        </ErrorBoundary>
       )}
       <MobileNav tab={tab} favCount={favCount} isAdmin={isAdmin} onGo={goMobile} />
       <footer className="mt-auto border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">

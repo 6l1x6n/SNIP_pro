@@ -1,6 +1,5 @@
-// @ts-nocheck — как и остальные views, типы правим инкрементально
 import { useState } from 'react'
-import { SEGMENT_LABEL, SEGMENT_COLOR, type ModelUsage } from '../../hooks/useAdmin'
+import { SEGMENT_LABEL, SEGMENT_COLOR, type Segment, type ModelUsage } from '../../hooks/useAdmin'
 import { Icon } from '../Icon'
 
 function pct(x: number, n: number): number {
@@ -15,7 +14,7 @@ function barColor(p: number): string {
 }
 
 /** Кольцевая диаграмма сегментов (чистый SVG, без зависимостей). */
-export function SegmentDonut({ segments, size = 132 }: { segments: { seg: string; n: number }[]; size?: number }) {
+export function SegmentDonut({ segments, size = 132 }: { segments: { seg: Segment; n: number }[]; size?: number }) {
   const total = segments.reduce((s, x) => s + x.n, 0)
   const R = 48
   const C = 2 * Math.PI * R
@@ -83,7 +82,8 @@ export function ModelUsageCard({
   const [open, setOpen] = useState(false)
   const x = usage.x ?? usage.x_est ?? 0
   const p = pct(x, usage.n)
-  const segs = (usage.by_segment || []).map((s) => ({ seg: s.seg, n: s.n }))
+  // API отдаёт seg строкой — кастуем к union; неизвестные сегменты не приходят
+  const segs = (usage.by_segment || []).map((s) => ({ seg: s.seg as Segment, n: s.n }))
   const total = segs.reduce((s, v) => s + v.n, 0)
 
   return (

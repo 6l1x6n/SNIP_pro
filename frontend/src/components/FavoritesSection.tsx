@@ -1,5 +1,4 @@
-// @ts-nocheck — TODO: fix TypeScript errors incrementally
-import React, { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import {
   loadFavorites, removeFavorite, updateFavoriteNote, clearFavorites,
   favoritesToMarkdown, FAVORITES_EVENT, type Favorite,
@@ -114,7 +113,7 @@ export function FavoritesSection({ onOpenPdf, user }: {
 
               <div className="mt-2.5 flex flex-wrap items-center gap-2 text-xs">
                 {f.documentId && (
-                  <button onClick={() => onOpenPdf(f.documentId, f.page ?? 1, f.kind === 'fragment' ? (f.text || f.quote || null) : (f.quote || null))} className="btn btn-sm btn-secondary py-1.5 max-md:py-2 max-md:order-first max-md:w-full"><Icon name="file" size={13} /> Открыть PDF{f.page != null ? ` · стр. ${f.page}` : ''}</button>
+                  <button onClick={() => onOpenPdf(f.documentId!, f.page ?? 1, f.kind === 'fragment' ? (f.text || f.quote || null) : (f.quote || null))} className="btn btn-sm btn-secondary py-1.5 max-md:py-2 max-md:order-first max-md:w-full"><Icon name="file" size={13} /> Открыть PDF{f.page != null ? ` · стр. ${f.page}` : ''}</button>
                 )}
                 {editingId !== f.id && (
                   <button onClick={() => startEdit(f)} className="btn btn-sm btn-ghost py-1.5 max-md:py-1 text-slate-400">{f.note ? <><Icon name="edit" size={12} /> Заметка</> : <><Icon name="plus" size={12} /> Заметка</>}</button>
