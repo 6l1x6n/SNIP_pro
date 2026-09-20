@@ -404,7 +404,7 @@ def get_fallback_chain():
     Возвращает только провайдеров с наличествующими ключами, в порядке приоритета.
     Явный EMBEDDING_PROVIDER из настроек ставится первым. Весь индекс строится
     ОДНИМ провайдером (миксовать векторы разных моделей нельзя!)."""
-    from app.config import settings
+    from pipeline.config import settings
     s = settings
     chain: list = []
     if getattr(s, "gemini_api_key", None):
@@ -426,7 +426,7 @@ def get_fallback_chain():
 
 # Фабрика
 def get_embedding_provider(model_name: str = None, device: str = "cpu") -> EmbeddingProvider:
-    from app.config import settings
+    from pipeline.config import settings
     name = model_name or settings.embedding_model
     provider = getattr(settings, "embedding_provider", "") or ""
     # явный выбор через EMBEDDING_PROVIDER=gemini (free-tier хостинг 512MB: без локальной модели)

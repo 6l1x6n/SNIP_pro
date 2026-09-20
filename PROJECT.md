@@ -46,9 +46,9 @@ D1 `embed_cache` (30 дней, ключ по builtAt): повторные воп
 ## 1.1. Поток данных
 
 1. **Источник** `scripts/check_updates.py` — diff текущей `norms/` с adilet.zan.kz; новые/изменённые PDF раскладываются вручную (полный автомат сознательно не делается: кривой парсинг отравит индекс), метаданные — `norms/meta.json`.
-2. **Extractor** `backend/app/pipeline/extractor.py:103` `fitz` `get_text(flags=TEXTFLAGS_TEXT)`, эвристика скана `scanned_ratio<0.3`, fallback `pytesseract rus+kaz+eng` dpi200 (build-time, импортируется из legacy-бэка).
-3. **Chunker** `backend/app/pipeline/chunker.py` `MAX_CHARS=2800` overlap `600`, режет по `^\d+(\.\d+)*` `Глава|Раздел|Таблица`, не режет пункт.
-4. **Indexer** `scripts/build_index.py` — эмбед-каскад `gemini(768) → jina/voyage/cohere/mistral(1024)` (ключи `backend/.env`), int8-per-vector квантование, `values_extract.py` → `values.json`; выход: `chunks.json/vectors.bin + manifest/bm25/docs/synonyms.json`.
+2. **Extractor** `scripts/pipeline/extractor.py` `fitz` `get_text(flags=TEXTFLAGS_TEXT)`, эвристика скана `scanned_ratio<0.3`, fallback `pytesseract rus+kaz+eng` dpi200 (build-time).
+3. **Chunker** `scripts/pipeline/chunker.py` `MAX_CHARS=2800` overlap `600`, режет по `^\d+(\.\d+)*` `Глава|Раздел|Таблица`, не режет пункт.
+4. **Indexer** `scripts/build_index.py` — эмбед-каскад `gemini(768) → jina/voyage/cohere/mistral(1024)` (ключи в корневом `.env`), int8-per-vector квантование, `values_extract.py` → `values.json`; выход: `chunks.json/vectors.bin + manifest/bm25/docs/synonyms.json`.
 5. **Шардирование** `scripts/shard_index.py` — режет монолиты на шарды ≤4 МиБ (лимит Pages 25 МиБ), пишет `manifest.shards`; в `rebuild.sh` встроен.
 6. **Поиск** `frontend/src/search/engine.ts` — BM25 по `bm25.json` + косинус int8-векторов (query-вектор — Worker `/api/embed` по провайдеру из манифеста) + RRF `k=60` → `0.45/0.55` (semantic) или `0.6/0.4` → `relevance_percent 10-98`; при 429 — деградация в BM25-only, 402 пробрасывается.
 7. **Ответ** `worker/src/index.ts /api/ask` — rerank-каскад, роутер сложности, prompt v2 + второй проход; values-фактоиды отвечаются до LLM бесплатно.
@@ -63,12 +63,12 @@ D1 `embed_cache` (30 дней, ключ по builtAt): повторные воп
 | **Фронт** | React 19 + Vite + Tailwind 3.4 + TypeScript | `frontend/package.json`, `vite.config.ts` |
 | **Поиск** | Гибрид в браузере: BM25 + int8-векторы + RRF | `frontend/src/search/engine.ts` |
 | **Индекс** | Статический, шардированный (≤4 МиБ), int8-per-vector | `frontend/public/index/manifest.json` v2, 40 931 чанк × 1024d |
-| **Эмбеддинги** | Cohere `embed-multilingual-v3.0` 1024d (манифест-управляемый каскад) | `worker/src/index.ts` `embedQueryFresh`, `backend/app/embeddings/provider.py` (build-time) |
+| **Эмбеддинги** | Cohere `embed-multilingual-v3.0` 1024d (манифест-управляемый каскад) | `worker/src/index.ts` `embedQueryFresh`, `scripts/pipeline/provider.py` (build-time) |
 | **API** | Cloudflare Worker (1 файл) + D1 | `worker/src/index.ts`, `worker/schema.sql` |
 | **LLM** | Каскад: Groq → Zen → Pollinations → Gemini → Cerebras → OpenRouter → DeepSeek → Mistral → Cohere → workers-ai | `worker/src/index.ts` `llmLinks`, бюджеты `llm_budget` |
 | **Rerank** | Каскад: Voyage `rerank-2` → Cohere `rerank-multilingual-v3.0` → Jina → LLM-listwise | `worker/src/index.ts` `rerankLinks` |
 | **Сборка индекса** | Python 3.12 + PyMuPDF + backend-пайплайн (build-time) | `scripts/build_index.py`, `scripts/shard_index.py` |
-| **Legacy** | FastAPI + PostgreSQL 17 + pgvector (не прод; библиотека для сборщика) | `backend/`, `docker-compose.yml` |
+
 
 ---
 
@@ -101,7 +101,7 @@ SNIP_pro/
     gen_tokenize_fixture.py  # фикстура паритет-теста токенизатора
     gen_golden_from_values.py# рост golden из values-фактов
     verify_values.py / verify_search.py / check_updates.py
-  backend/                   # LEGACY FastAPI+pgvector; build-time библиотека для build_index.py
+  scripts/pipeline/          # build-time библиотека сборщика (extractor, chunker, provider, config)
   norms/                     # корпус нормативки (в git только meta.json)
 ```
 
@@ -113,7 +113,7 @@ SNIP_pro/
 
 **D1 (прод Worker):** `users(id,email,password_hash,plan,full_name,name_changed_at,created_at)`, `usage(day,subject,count)` — ключ дня для гостей / часа для юзеров, `balances`, `ledger`, `subscriptions`, `purchases`, `explain_usage/explain_cache`, `ask_cache` (ключ по builtAt), `embed_cache` (30д, ключ по builtAt), `llm_budget`, `rewrite_cache`, `feedback`, `settings` (`worker/schema.sql`; часть таблиц создаётся лениво — самозалечивающаяся миграция).
 
-**Legacy (backend/):** SQLAlchemy-модели `Document/Chunk(Vector384)/DocumentVersion/CollectorLog/User/PinnedDocument` — используются только пайплайном сборки индекса.
+
 
 ---
 
@@ -148,7 +148,7 @@ SNIP_pro/
 
 ### Текущий деплой (22.08.2026) — 0₸ без карты
 * **Фронт:** Cloudflare Pages `https://snippy-llm.pages.dev` (wrangler CLI, бандл с `VITE_API_BASE=https://snip-backend-m21d.onrender.com`)
-* **Бэк:** Render Free `https://snip-backend-m21d.onrender.com` (Blueprint `render.yaml`, Docker `backend/Dockerfile`, Frankfurt, health `/api/health`); free-инстанс спит через 15 мин → keep-alive `.github/workflows/keepalive.yml` пинг каждые 10 мин
+* **Бэк:** Render (удалён) — legacy Render-бэкенд и его keep-alive воркфлоу вычищены
 * **БД:** Neon Free eu-central-1, pgvector, **direct-эндпоинт** (`-pooler` ломает интроспекцию типов asyncpg → InvalidCachedStatementError), пул 5+10
 * **Эмбеддинги:** Gemini API `gemini-embedding-001` 768d, free tier (`EMBEDDING_PROVIDER=gemini`); локальный fallback fastembed ONNX MiniLM 384d; torch/sentence-transformers убраны → RAM ~144MB
 * **Квоты в проде:** `QUOTA_ENABLED=1` anon 30/day registered 200/day
@@ -169,7 +169,7 @@ Render/Neon/FastAPI-путь и Oracle VM-варианты описаны в `DE
 ### Env
 
 * **Worker (прод):** секреты — `wrangler secret put` в `worker/`; публичные vars — `worker/wrangler.toml`. Ключи провайдеров: `GROQ_API_KEY`, `OPENCODE_API_KEY` (Zen), `GEMINI_API_KEY`, `CEREBRAS_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, `MISTRAL_API_KEY`, `COHERE_API_KEY`, `JINA_API_KEY`, `VOYAGE_API_KEY`, `EVAL_TOKEN`; конфиг: `ALLOWED_ORIGINS`, `INDEX_BASE_URL`, `JWT_SECRET`, `CREDITS_ANON/CREDITS_USER`, `FAST_COST/DEEP_COST`, `LLM_BUDGET_DEFAULTS`-override через D1 `settings`.
-* **Сборка индекса:** ключи эмбеддеров в `backend/.env` (не в git) — читает `build_index.py`.
+* **Сборка индекса:** ключи эмбеддеров в корневом `.env` (не в git) — читает `build_index.py`.
 * **Фронт:** `frontend/.env.production` — `VITE_WORKER_BASE=https://snip-worker.postalarchive.workers.dev` (вшивается при сборке).
 
 ---
@@ -190,13 +190,13 @@ npx wrangler dev                 # http://localhost:8787
 npx tsc --noEmit
 
 # 3. Пересборка индекса (обновление нормативки)
-/opt/homebrew/bin/python3 scripts/build_index.py --reuse-vectors   # ключи в backend/.env
+/opt/homebrew/bin/python3 scripts/build_index.py --reuse-vectors   # ключи в .env
 /opt/homebrew/bin/python3 scripts/shard_index.py frontend/public/index
 ./scripts/rebuild.sh             # или полный цикл одной командой
 /opt/homebrew/bin/python3 scripts/eval_search.py --tag myrun      # линейка качества
 ```
 
-`start.sh` / `stop.sh` — обёртки локального фронта. Docker compose / Ollama / PG-17 инструкция — legacy (`backend/`), для продукта не нужны.
+`start.sh` / `stop.sh` — обёртки локального фронта. 
 
 ---
 
@@ -217,7 +217,7 @@ POST /api/embed {query} → float[]
 POST /api/explain {text,doc_number?} → только Pro/Business
 ```
 
-`X-Quota-Remaining/Limit` + `X-Device-Id` `frontend/src/utils/api.ts:31`, `Authorization Bearer JWT / X-API-Key sk-` `backend/app/core/deps.py:42`.
+`X-Quota-Remaining/Limit` + `X-Device-Id` `frontend/src/utils/api.ts:31`, `Authorization Bearer JWT` (worker, WebCrypto HS256).
 
 ---
 

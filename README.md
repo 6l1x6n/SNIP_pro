@@ -75,10 +75,6 @@ python3 scripts/gen_golden_from_values.py # дожать golden-набор ке�
 
 Опционально: `--reuse-vectors` кэширует эмбеддинги по sha256 чанка (`.index_cache/`) — пересборка без расхода API-квоты.
 
-### Legacy-бэкенд (`backend/`)
-
-FastAPI + PostgreSQL/pgvector больше не прод-путь. Директория живёт как **build-time библиотека**: `scripts/build_index.py` импортирует оттуда `PDFExtractor`, `SNIPChunker` и цепочку эмбед-провайдеров. Docker compose / Render-деплой бэка — устаревший сценарий.
-
 ---
 
 ## API (Worker, прод)
@@ -120,7 +116,7 @@ scripts/
   rebuild.sh              # полный цикл обновления нормативки (5 шагов, с гейтами)
   norms_refresh.sh        # полуавтомат с diff по adilet и аппрувом
   eval_search.py          # линейка качества: Hit@k / MRR по golden.jsonl
-backend/                  # LEGACY: FastAPI+pgvector; жив как build-time библиотека для build_index.py
+  pipeline/               # build-time библиотека: PDFExtractor, SNIPChunker, эмбед-провайдеры, config (.env)
 ```
 
 ---
@@ -131,7 +127,7 @@ backend/                  # LEGACY: FastAPI+pgvector; жив как build-time �
 - **LLM:** каскад в `worker/src/index.ts` (`llmLinks` + `LLM_BUDGET_DEFAULTS`); дневные бюджеты и флаги — в настройках админки, без деплоя.
 - **Reranker:** каскад `rerankLinks` (Voyage → Cohere → Jina → LLM-listwise → workers-ai), включается флагом `smart_rerank`.
 - **Источник:** `scripts/check_updates.py` (diff с adilet) + ручная раскладка в `norms/` (`meta.json`) — полный автомат сознательно не делается: кривой парсинг отравит индекс.
-- **OCR:** `backend/app/pipeline/extractor.py` (PyMuPDF + tesseract) — вызывается на этапе сборки индекса.
+- **OCR:** `scripts/pipeline/extractor.py` (PyMuPDF + tesseract) — вызывается на этапе сборки индекса.
 
 ---
 

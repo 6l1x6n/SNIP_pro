@@ -24,7 +24,7 @@ import argparse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "backend"))
+sys.path.insert(0, str(ROOT / "scripts"))
 
 # ---------- Токенизатор (зеркалится в engine.ts) ----------
 
@@ -259,7 +259,7 @@ def _scrape_doc_binary(path: Path) -> str:
 
 def make_doc(title: str, text: str, source_format: str):
     """Сплошной текст -> ExtractedDoc с псевдо-страницами (~3000 символов), как у PDF."""
-    from app.pipeline.extractor import PageText, ExtractedDoc
+    from pipeline.extractor import PageText, ExtractedDoc
 
     pages, buf, size = [], [], 0
     for line in text.splitlines():
@@ -288,9 +288,9 @@ def main():
                          "пересборка ради values.json/новых документов не тратит квоту API")
     args = ap.parse_args()
 
-    from app.pipeline.extractor import PDFExtractor
-    from app.pipeline.chunker import SNIPChunker
-    from app.embeddings.provider import get_embedding_provider
+    from pipeline.extractor import PDFExtractor
+    from pipeline.chunker import SNIPChunker
+    from pipeline.provider import get_embedding_provider
 
     input_dir = Path(args.input)
     out_dir = Path(args.out)
@@ -391,16 +391,16 @@ def main():
     # Весь индекс строится ОДНИМ провайдером; если его квота исчерпана —
     # берём следующего. Выбранный пишем в manifest.json, воркер /api/embed
     # читает его и эмбеддит запросы той же моделью.
-    from app.embeddings.provider import get_fallback_chain
+    from pipeline.provider import get_fallback_chain
 
     chain = get_fallback_chain()
     if args.provider:
         chain = [(n, e) for n, e in chain if n == args.provider]
         if not chain:
-            sys.exit(f"Провайдер '{args.provider}' недоступен — нет ключа в backend/.env")
+            sys.exit(f"Провайдер '{args.provider}' недоступен — нет ключа в .env (корень проекта)")
     if not chain:
         sys.exit("Нет ни одного ключа эмбеддингов (GEMINI/JINA/VOYAGE/COHERE/MISTRAL_API_KEY)\n"
-                 "Добавьте хотя бы один в backend/.env — все бесплатные, без карты")
+                 "Добавьте хотя бы один в .env (корень проекта) — все бесплатные, без карты")
 
     # ---- 2a. Кэш эмбеддингов (--reuse-vectors): sha256(text[:8000]) -> (scale, int8) ----
     vec_cache: dict[str, tuple[float, bytes]] = {}
