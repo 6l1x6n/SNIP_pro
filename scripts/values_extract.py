@@ -70,12 +70,12 @@ for _canon, _words, _syms in UNITS:
 _WORD_FORMS.sort(key=len, reverse=True)
 _SYM_FORMS.sort(key=len, reverse=True)
 
-_BND = r"(?<![а-яa-z0-9])"
-_BND_R = r"(?![а-яa-z0-9])"
+_BND = r"(?<![а-яёәғқңөұүһіa-z0-9])"
+_BND_R = r"(?![а-яёәғқңөұүһіa-z0-9])"
 _WORD_ALT = _BND + "(" + "|".join(re.escape(f) for f in _WORD_FORMS) + ")" + _BND_R
 # у символьных — левая граница только против букв (чтобы «см2» не дало «м2»),
 # цифры слева разрешены («50%», «200 м2» — пробел и так чистится отдельно)
-_SYM_ALT = r"(?<![а-яa-z])(" + "|".join(re.escape(f) for f in _SYM_FORMS) + ")" + _BND_R
+_SYM_ALT = r"(?<![а-яёәғқңөұүһіa-z])(" + "|".join(re.escape(f) for f in _SYM_FORMS) + ")" + _BND_R
 # Символьные ПЕРВЫЕ: «м/с» должно бить «м», «м2» — «м».
 _UNIT_CORE = r"(?:" + _SYM_ALT + r"|" + _WORD_ALT + r")"
 UNIT_RE = re.compile(r"\s*" + _UNIT_CORE)          # поиск внутри фрагмента / строго в начале
@@ -158,7 +158,7 @@ def range_fragment_before(s: str, start: int) -> bool:
 
 def model_number_before(s: str, start: int) -> bool:
     """Буква вплотную перед знаком («СВ-300», «м-1»): модель/единица, не значение."""
-    return re.search(r"[а-яa-z]$", s[:start]) is not None
+    return re.search(r"[а-яёәғқңөұүһіa-z]$", s[:start]) is not None
 
 
 # Совместимость единиц и параметров: ближайшее слово-предшественник иногда врёт
@@ -254,7 +254,7 @@ POST_OP_RE = re.compile(
 # а не в требование («при длине коридора до 10 м», «на 200 м2 площади»).
 def _bw(word: str) -> "re.Pattern[str]":
     # левая граница (начало строки или не-буква): «на » не должно ловиться в «ширина»
-    return re.compile(r"(?:^|(?<![а-яa-z0-9]))" + re.escape(word))
+    return re.compile(r"(?:^|(?<![а-яёәғқңөұүһіa-z0-9]))" + re.escape(word))
 
 
 BARRIERS: list[tuple[str, "re.Pattern[str]"]] = [
@@ -555,7 +555,7 @@ def extract_table_ceiling_facts(text: str, raw_text: str, c: dict) -> list[dict]
             continue
         # числа с единицей в чанке (сноски вида «2,7 1) м») — в ПОРЯДКЕ текста
         unit_re = re.compile(
-            r"(\d+(?:[.,]\d+)?)\s*(?:\d+\)\s*)?" + re.escape(pat["unit"]) + r"(?![а-яa-z0-9])")
+            r"(\d+(?:[.,]\d+)?)\s*(?:\d+\)\s*)?" + re.escape(pat["unit"]) + r"(?![а-яёәғқңөұүһіa-z0-9])")
         nums: list[tuple[float, str]] = []
         for m in unit_re.finditer(s):
             v = parse_num(m.group(1))

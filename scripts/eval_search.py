@@ -49,7 +49,7 @@ def load_ts_semantic_synonyms() -> dict[str, list[str]]:
 
 def norm_query(q: str) -> str:
     q = q.lower().replace("ё", "е")
-    q = re.sub(r"[^a-zа-я0-9_\s-]", " ", q)
+    q = re.sub(r"[^а-яёәғқңөұүһі0-9_\s-]", " ", q)
     return re.sub(r"\s+", " ", q).strip()
 
 

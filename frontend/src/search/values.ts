@@ -91,7 +91,7 @@ const SUBJECT_ALIASES: Record<string, string[]> = {
 };
 
 function normalizeWords(q: string): string[] {
-  return q.toLowerCase().replace(/ё/g, "е").replace(/[^a-zа-я0-9\s-]/g, " ").split(/\s+/).filter(Boolean);
+  return q.toLowerCase().replace(/ё/g, "е").replace(/[^а-яёәғқңөұүһі0-9\s-]/g, " ").split(/\s+/).filter(Boolean);
 }
 
 let valuesPromise: Promise<ValueFact[] | null> | null = null;
@@ -391,7 +391,7 @@ function scopePenalty(qNorm: string, f: ValueFact): number {
   const scope = String(f.scope || f.cls || "").toLowerCase().replace(/ё/g, "е").trim();
   if (scope) {
     const key = String(f.k || "").toLowerCase();
-    const extra = scope.split(/[^a-zа-я0-9]+/).filter((w) => w.length >= 4 && !key.includes(w.slice(0, Math.max(4, w.length - 2))));
+    const extra = scope.split(/[^а-яёәғқңөұүһі0-9]+/).filter((w) => w.length >= 4 && !key.includes(w.slice(0, Math.max(4, w.length - 2))));
     if (extra.length && !extra.some((w) => qNorm.includes(w.slice(0, Math.max(4, w.length - 2))))) p += 1;
   }
   const s = String(f.s || "").toLowerCase().replace(/ё/g, "е");

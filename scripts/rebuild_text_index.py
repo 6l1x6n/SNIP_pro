@@ -22,7 +22,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-sys.path.insert(0, str(ROOT / "backend"))
 
 from build_index import tokenize, SYNONYMS  # noqa: E402
 from values_extract import extract_values  # noqa: E402

@@ -112,7 +112,8 @@ function yoVariants(s: string): string {
 }
 
 function normalizeQuery(q: string): string {
-  return q.toLowerCase().replace(/ё/g, 'е').replace(/[^\w\s\-а-яё]/gi, ' ').replace(/\s+/g, ' ').trim()
+  // kz-буквы сохраняем: иначе казахские слова в подсветке разваливаются
+  return q.toLowerCase().replace(/ё/g, 'е').replace(/[^\w\s\-а-яёәғқңөұүһі]/gi, ' ').replace(/\s+/g, ' ').trim()
 }
 
 export type TokenInfo = { token: string; index: number; color: PaletteColor }
