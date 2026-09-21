@@ -4617,6 +4617,28 @@ export default {
             cors
           );
         }
+        // POST /api/admin/set-password {uid, password} — суперадмин задаёт пользователю новый пароль
+        if (url.pathname === "/api/admin/set-password" && req.method === "POST") {
+          const body = (await req.json().catch(() => ({}))) as any;
+          const uid = String(body.uid ?? "").slice(0, 64);
+          const password = String(body.password ?? "");
+          if (!uid) return json({ error: "uid required" }, 400, cors);
+          if (password.length < 6 || password.length > 128)
+            return json({ error: "bad_password", detail: "Пароль — от 6 до 128 символов" }, 400, cors);
+          const user = await env.DB.prepare("SELECT id, email FROM users WHERE id=?").bind(uid).first<{ id: string; email: string }>();
+          if (!user) return json({ error: "user not found" }, 404, cors);
+          await env.DB.prepare("UPDATE users SET password_hash=? WHERE id=?")
+            .bind(await hashPassword(password), uid)
+            .run();
+          // аудит: 0-дельта запись в ledger с исполнителем
+          await env.DB.prepare("INSERT INTO ledger (subject, delta, kind, meta, created_at) VALUES (?, 0, 'admin', ?, ?)").bind(
+            `user:${uid}`,
+            JSON.stringify({ admin_password_set: true, by: admin.email }),
+            new Date().toISOString()
+          ).run();
+          return json({ ok: true, email: user.email }, 200, cors);
+        }
+
         // GET /api/admin/reset-requests — заявки на сброс пароля (ожидающие + с выданным кодом)
         if (url.pathname === "/api/admin/reset-requests" && req.method === "GET") {
           await ensureResetTable(env);

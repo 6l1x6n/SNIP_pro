@@ -249,3 +249,22 @@ export async function rejectReset(email: string): Promise<{ ok: boolean }> {
   if (!r.ok) throw new Error(d?.detail || d?.error || `reject ${r.status}`)
   return d
 }
+
+export async function setAdminPassword(uid: string, password: string): Promise<{ ok: boolean; email: string }> {
+  const r = await authFetch(`${WORKER_BASE}/api/admin/set-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uid, password }),
+  })
+  const d = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(d?.detail || d?.error || `set-password ${r.status}`)
+  return d
+}
+
+/** Случайный читаемый пароль: 3 слова-число — легко диктовать. */
+export function generatePassword(): string {
+  const words = ['норма', 'снип', 'кодекс', 'балка', 'ферма', 'бетон', 'арматура', 'фундамент', 'уклон', 'маяк']
+  const pick = () => words[Math.floor(Math.random() * words.length)]
+  const n = Math.floor(10 + Math.random() * 90)
+  return `${pick()}-${pick()}-${n}`
+}

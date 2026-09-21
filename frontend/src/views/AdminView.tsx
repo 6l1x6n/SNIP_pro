@@ -5,7 +5,7 @@ import { isAdminEmail } from '../utils/admin'
 import {
   fetchAdminStats, fetchAdminUsers, fetchAdminActivity, freezeUser,
   fetchDeletionReasons, fetchArchivedUsers, deleteUserToArchive, restoreUserFromArchive, saveDeletionTemplate,
-  fetchResetRequests, approveReset, rejectReset,
+  fetchResetRequests, approveReset, rejectReset, setAdminPassword, generatePassword,
   type ResetRequest,
   type DeletionReason, type ArchivedUser,
   fetchAdminSettings, fetchAdminHealth, saveAdminSetting, displaySubject,
@@ -165,6 +165,10 @@ export function AdminView({ user }: { user: any }) {
   const [tplBusy, setTplBusy] = useState<string | null>(null)
   const [resets, setResets] = useState<ResetRequest[]>([])
   const [issuedCode, setIssuedCode] = useState<{ email: string; code: string } | null>(null)
+  const [pwUser, setPwUser] = useState<any>(null)
+  const [pwValue, setPwValue] = useState('')
+  const [pwBusy, setPwBusy] = useState(false)
+  const [pwDone, setPwDone] = useState(false)
   // feedback
   const [fbRating, setFbRating] = useState<'all' | '1' | '-1'>('all')
   const [fbItems, setFbItems] = useState<any[]>([])
@@ -441,6 +445,7 @@ export function AdminView({ user }: { user: any }) {
                     <div className="text-slate-400 truncate" title={umeta}>{umeta}</div>
                   </div>
                   <button disabled={freezing === u.id} onClick={async () => { if (!confirm(`Заморозить ${u.email}? Баланс ${u.balance} будет обнулён.`)) return; setFreezing(u.id); try { const r = await freezeUser(u.id, 'freeze from admin'); alert(`Заморожено: ${r.frozen}`); loadUsers(uOff) } catch { alert('Ошибка заморозки') } finally { setFreezing(null) } }} className="btn btn-sm border border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 bg-transparent hover:bg-red-50 dark:hover:bg-red-950/30 shrink-0 w-[110px] justify-center">Заморозить</button>
+                  <button onClick={() => { setPwUser(u); setPwValue(generatePassword()); setPwDone(false) }} className="btn btn-sm btn-secondary shrink-0 w-[110px] justify-center"><Icon name="key" size={12} /> Пароль</button>
                   <button onClick={async () => { setDeleting(u); if (!reasons.length) { try { const d = await fetchDeletionReasons(); setReasons(d.reasons) } catch {} } }} className="btn btn-sm border border-red-300 dark:border-red-900 text-red-600 dark:text-red-400 bg-transparent hover:bg-red-50 dark:hover:bg-red-950/30 shrink-0 w-[110px] justify-center"><Icon name="trash" size={12} /> Удалить</button>
                 </div>
                 )
@@ -448,6 +453,40 @@ export function AdminView({ user }: { user: any }) {
               <div className="flex gap-2 mt-3">
                 <button disabled={uOff === 0} onClick={() => loadUsers(uOff - 50)} className="btn btn-sm btn-secondary"><Icon name="arrowLeft" size={12} /> Назад</button>
                 <button disabled={uOff + 50 >= uTotal} onClick={() => loadUsers(uOff + 50)} className="btn btn-sm btn-secondary">Вперёд <Icon name="arrowRight" size={12} /></button>
+              </div>
+            </div>
+          )}
+
+          {/* Модалка: задать пароль пользователю */}
+          {pwUser && (
+            <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => !pwBusy && setPwUser(null)}>
+              <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 p-5 max-w-sm w-full space-y-3" onClick={(e) => e.stopPropagation()}>
+                {!pwDone ? (
+                  <>
+                    <div className="font-semibold text-slate-900 dark:text-white">Новый пароль</div>
+                    <div className="text-xs text-slate-500 dark:text-slate-400 break-all">{pwUser.email} • пользователь не получит уведомление — передайте пароль лично.</div>
+                    <input value={pwValue} onChange={(e) => setPwValue(e.target.value)} placeholder="Пароль (мин 6)" className="input font-mono text-sm" />
+                    <div className="flex gap-2">
+                      <button onClick={() => setPwValue(generatePassword())} className="btn btn-sm btn-secondary flex-1 justify-center"><Icon name="refresh" size={12} /> Сгенерировать</button>
+                    </div>
+                    {pwValue && pwValue.length < 6 && <div className="text-xs text-red-600">Минимум 6 символов</div>}
+                    <div className="flex gap-2 justify-end pt-1">
+                      <button disabled={pwBusy} onClick={() => { setPwUser(null); setPwDone(false) }} className="btn btn-sm btn-secondary">Отмена</button>
+                      <button
+                        disabled={pwBusy || pwValue.length < 6}
+                        onClick={async () => { setPwBusy(true); try { await setAdminPassword(pwUser.id, pwValue); setPwDone(true) } catch (e: any) { alert(e.message || 'Ошибка') } finally { setPwBusy(false) } }}
+                        className="btn btn-sm btn-primary"
+                      >Сменить пароль</button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-center space-y-3">
+                    <div className="text-xs text-slate-500 dark:text-slate-400">Пароль для <b className="text-slate-700 dark:text-slate-200 break-all">{pwUser.email}</b> — скопируйте и передайте:</div>
+                    <div className="text-lg font-bold font-mono text-slate-900 dark:text-white select-all break-all">{pwValue}</div>
+                    <button onClick={() => navigator.clipboard?.writeText(pwValue)} className="btn btn-sm btn-secondary w-full justify-center"><Icon name="copy" size={12} /> Скопировать</button>
+                    <button onClick={() => { setPwUser(null); setPwDone(false) }} className="btn btn-md btn-primary w-full py-2">Готово</button>
+                  </div>
+                )}
               </div>
             </div>
           )}
