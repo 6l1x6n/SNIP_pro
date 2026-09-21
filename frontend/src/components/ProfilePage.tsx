@@ -18,9 +18,8 @@ import { authFetch, WORKER_BASE } from '../utils/api'
 
 
 
-/** Привязка Telegram: одноразовая ссылка-токен, привязка подтверждает /start в боте. */
-function TelegramLink() {
-  const { user } = useAuth()
+/** Логика привязки Telegram: ссылка-токен + поллинг подтверждения из бота. */
+function useTelegramLink(user: any) {
   const [linkedName, setLinkedName] = useState<string | null>(user?.tg_username ?? null)
   const [busy, setBusy] = useState(false)
   const [waiting, setWaiting] = useState(false)
@@ -33,23 +32,23 @@ function TelegramLink() {
     return d?.telegram?.linked ? (d.telegram.username || 'привязан') : null
   }
 
-  const link = async () => {
+  const link = async (): Promise<boolean> => {
     setErr(null); setBusy(true)
     try {
       const r = await authFetch(`${WORKER_BASE}/api/tg/link`)
       const d = await r.json().catch(() => ({}))
-      if (!r.ok) { setErr(d.detail || d.error || 'Бот недоступен'); return }
+      if (!r.ok) { setErr(d.detail || d.error || 'Бот недоступен'); return false }
       window.open(d.url, '_blank', 'noopener')
-      // ждём привязку: бот пришлёт /start с токеном — раз в 3с опрашиваем профиль
       setWaiting(true)
       for (let i = 0; i < 40; i++) {
         await new Promise((res) => setTimeout(res, 3000))
         const name = await refreshMe()
-        if (name) { setLinkedName(name); setWaiting(false); return }
+        if (name) { setLinkedName(name); setWaiting(false); return true }
       }
       setWaiting(false)
       setErr('Не дождались подтверждения. Попробуйте ещё раз — ссылка живёт 15 минут.')
-    } catch { setErr('Не удалось соединиться с сервером') } finally { setBusy(false) }
+      return false
+    } catch { setErr('Не удалось соединиться с сервером'); return false } finally { setBusy(false) }
   }
 
   const unlink = async () => {
@@ -58,6 +57,12 @@ function TelegramLink() {
     catch { setErr('Не удалось отвязать') } finally { setBusy(false) }
   }
 
+  return { linkedName, busy, waiting, err, link, unlink }
+}
+
+/** Ячейка Telegram в сетке профиля. */
+function TelegramLink({ tg }: { tg: ReturnType<typeof useTelegramLink> }) {
+  const { linkedName, busy, waiting, err, link, unlink } = tg
   return (
     <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl p-4 border border-slate-200 dark:border-slate-700">
       <div className="text-xs text-slate-500 dark:text-slate-400">Telegram</div>
@@ -70,7 +75,7 @@ function TelegramLink() {
         <>
           <div className="font-medium text-slate-900 dark:text-white mt-1.5">Не привязан</div>
           <button onClick={link} disabled={busy || waiting} className="text-xs text-blue-600 dark:text-blue-400 hover:underline mt-2">
-            {waiting ? 'Ждём подтверждения в боте…' : busy ? 'Готовим ссылку…' : 'Привязать — коды восстановления будут приходить в бота'}
+            {waiting ? 'Ждём подтверждения в боте…' : busy ? 'Готовим ссылку…' : 'Привязать'}
           </button>
         </>
       )}
@@ -534,6 +539,21 @@ export function ProfilePage({ stats, docs, onLogout, highlightPalette, setHighli
 }) {
   const { user, logout } = useAuth()
   const [section, setSection] = useState<SectionId>((initialSection as SectionId) || 'overview')
+  const tg = useTelegramLink(user)
+  // Компактное предложение привязать ТГ: один раз при входе в профиль,
+  // не чаще раза в 3 дня (localStorage), и только если ещё не привязан
+  const [tgPrompt, setTgPrompt] = useState(false)
+  useEffect(() => {
+    if (section !== 'overview' || tg.linkedName || tg.waiting) return
+    try {
+      const last = Number(localStorage.getItem('snip_tg_prompt_at') ?? 0)
+      if (Date.now() - last > 3 * 86400000) setTgPrompt(true)
+    } catch { setTgPrompt(true) }
+  }, [section, tg.linkedName, tg.waiting]) // eslint-disable-line
+  const dismissTgPrompt = () => {
+    setTgPrompt(false)
+    try { localStorage.setItem('snip_tg_prompt_at', String(Date.now())) } catch {}
+  }
 
   // Navigate to a section when requested from outside (e.g. the profile dropdown menu)
   useEffect(() => {
@@ -614,7 +634,7 @@ export function ProfilePage({ stats, docs, onLogout, highlightPalette, setHighli
                     <div className="text-xs text-slate-500 dark:text-slate-400 truncate">{user.email}</div>
                   </div>
                 </div>
-                <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
                   <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl p-4 border border-slate-200 dark:border-slate-700">
                     <div className="text-xs text-slate-500 dark:text-slate-400">Email</div>
                     <div className="font-medium text-slate-900 dark:text-white mt-1.5 break-all">{user.email}</div>
@@ -623,12 +643,34 @@ export function ProfilePage({ stats, docs, onLogout, highlightPalette, setHighli
                     <div className="text-xs text-slate-500 dark:text-slate-400">Имя</div>
                     <NameEditor />
                   </div>
-                  <TelegramLink />
+                  <TelegramLink tg={tg} />
+                </div>
+                <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
                   <NormsStats stats={stats} docs={docs} />
                   <ActivityStats />
                 </div>
               </div>
             </div>
+            {tgPrompt && !tg.linkedName && (
+              <div className="fixed inset-0 z-50 bg-black/40 flex items-end md:items-center justify-center p-4 animate-[fadeIn_.15s_ease-out]" onClick={dismissTgPrompt}>
+                <div className="relative w-full max-w-xs bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-xl p-5 text-center space-y-3 animate-[popIn_.18s_ease-out]" onClick={(e) => e.stopPropagation()}>
+                  <div className="w-11 h-11 mx-auto rounded-full bg-gradient-to-br from-sky-400 to-blue-600 text-white flex items-center justify-center text-lg">✈</div>
+                  <div>
+                    <div className="font-semibold text-slate-900 dark:text-white">Привязать Telegram?</div>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1.5 leading-relaxed">Коды восстановления будут приходить в бота мгновенно — без ожидания администратора.</p>
+                  </div>
+                  <div className="space-y-2 pt-1">
+                    <button
+                      onClick={async () => { const ok = await tg.link(); if (ok) dismissTgPrompt(); else setTgPrompt(false) }}
+                      disabled={tg.busy || tg.waiting}
+                      className="btn btn-md w-full py-2.5 bg-slate-900 dark:bg-white text-white dark:text-slate-900 hover:bg-slate-700 dark:hover:bg-slate-200"
+                    >{tg.waiting ? 'Ждём подтверждения…' : tg.busy ? 'Готовим ссылку…' : 'Привязать'}</button>
+                    <button onClick={dismissTgPrompt} className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">Не сейчас</button>
+                  </div>
+                  {tg.err && <div className="text-xs text-red-600 dark:text-red-400">{tg.err}</div>}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
