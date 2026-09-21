@@ -2185,7 +2185,8 @@ async function groqText(env: Env, model: string, prompt: string, maxTokens: numb
 }
 
 async function geminiText(env: Env, prompt: string, maxTokens: number, key?: string, model?: string): Promise<string> {
-  const m = model ?? env.GEMINI_TEXT_MODEL ?? "gemini-2.0-flash";
+    // "gemini-2.0-flash" удалён из API (404 no longer available) — берём живой алиас
+  const m = model ?? env.GEMINI_TEXT_MODEL ?? "gemini-flash-latest";
   const k = key ?? env.GEMINI_API_KEY;
   const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, {
     method: "POST",
