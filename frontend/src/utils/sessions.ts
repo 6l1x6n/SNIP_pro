@@ -99,6 +99,16 @@ export function loadSessions(): Record<string, SessionEntry> {
   return readSessions()
 }
 
+/** Короткий фрагмент ответа сессии для подсказки в истории («…» в конце). */
+export function sessionSnippet(entry: SessionEntry | null, max = 64): string {
+  const resp: any = entry?.resp
+  const raw = String(resp?.answer?.answer || resp?.results?.[0]?.t || resp?.results?.[0]?.text || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!raw) return ''
+  return raw.length > max ? raw.slice(0, max).trimEnd() + '…' : raw
+}
+
 export function getSession(query: string): SessionEntry | null {
   const all = readSessions()
   const e = all[query]

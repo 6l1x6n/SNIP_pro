@@ -1,4 +1,5 @@
 import { Icon } from './Icon'
+import type { ReactNode } from 'react'
 
 export interface DeletedNotice {
   full_name: string | null
@@ -14,10 +15,27 @@ const ruDate = (iso: string) => {
   return m ? `${m[3]}.${m[2]}.${m[1]}` : String(iso ?? '')
 }
 
+/** Текст с именем пользователя, выделенным градиентом («Уважаемый Max!» — имя цветом). */
+function withGradientName(text: string, name: string | null): ReactNode {
+  const who = String(name ?? '').trim()
+  if (!who) return text
+  const i = text.indexOf(who)
+  if (i < 0) return text
+  return (
+    <>
+      {text.slice(0, i)}
+      <span className="font-semibold bg-gradient-to-r from-blue-500 via-violet-500 to-fuchsia-500 bg-clip-text text-transparent">
+        {who}
+      </span>
+      {text.slice(i + who.length)}
+    </>
+  )
+}
+
 /**
- * Минималистичное «письмо» владельцу удалённого аккаунта: видно, кто отправил
- * (почта администратора, выполнившего удаление), персональное обращение с именем
- * градиентом, причина и описание. Показывается после проверки пароля при входе.
+ * Минималистичное «письмо» владельцу удалённого аккаунта: от администратора,
+ * который выполнил удаление, заголовок-причина и описание с именем в градиенте.
+ * Показывается после проверки пароля при попытке входа.
  */
 export function DeletedAccountLetter({ notice, onClose }: { notice: DeletedNotice; onClose: () => void }) {
   return (
@@ -28,15 +46,10 @@ export function DeletedAccountLetter({ notice, onClose }: { notice: DeletedNotic
           <span className="truncate">От: {notice.deleted_by}</span>
         </div>
         <div className="px-5 py-5 space-y-3">
-          <p className="text-sm text-slate-700 dark:text-slate-200">
-            Уважаемый{' '}
-            <span className="font-semibold bg-gradient-to-r from-blue-500 via-violet-500 to-fuchsia-500 bg-clip-text text-transparent">
-              {notice.full_name || 'пользователь'}
-            </span>
-            !
-          </p>
           <h3 className="font-semibold text-slate-900 dark:text-white">{notice.reason_title}</h3>
-          <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">{notice.reason_text}</p>
+          <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+            {withGradientName(notice.reason_text, notice.full_name)}
+          </p>
           <p className="text-xs text-slate-400 dark:text-slate-500 pt-3 border-t border-slate-100 dark:border-slate-800">
             Аккаунт находится в архиве до {ruDate(notice.purge_after)}. По вопросам восстановления пишите на адрес выше.
           </p>

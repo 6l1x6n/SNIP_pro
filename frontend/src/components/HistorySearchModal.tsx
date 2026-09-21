@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Icon } from './Icon'
 import { ListRow } from './ListRow'
-import { getSession } from '../utils/sessions'
+import { getSession, sessionSnippet } from '../utils/sessions'
 
 type HistorySearchModalProps = {
   open: boolean
@@ -40,9 +40,10 @@ export function HistorySearchModal({
     const f = filter.trim().toLowerCase()
     const match = (h: string) => !f || h.toLowerCase().includes(f)
     const pinSet = new Set(pins)
+    // только записи с сохранённой сессией (открываются без списания токенов)
     return {
-      pinnedShown: pins.filter((p) => history.includes(p) && match(p)),
-      restShown: history.filter((h) => !pinSet.has(h) && match(h)).slice(0, 10),
+      pinnedShown: pins.filter((p) => history.includes(p) && match(p) && getSession(p)),
+      restShown: history.filter((h) => !pinSet.has(h) && match(h) && getSession(h)).slice(0, 10),
     }
   }, [history, pins, filter])
 
@@ -78,9 +79,7 @@ export function HistorySearchModal({
         title={<span className="text-sm font-normal text-slate-700 dark:text-slate-200">{h}</span>}
         titleAttr={h}
         subtitle={
-          saved ? (
-            <span className="text-emerald-600 dark:text-emerald-400">сохранена • откроется бесплатно</span>
-          ) : undefined
+          saved ? <span className="text-slate-400 dark:text-slate-500">{sessionSnippet(getSession(h))}</span> : undefined
         }
         onOpen={() => choose(h)}
         titleOpenLabel={saved ? `Открыть сессию «${h}» бесплатно — токены не спишутся` : `Вставить «${h}» в поиск`}

@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { Icon } from './Icon'
 import { ListRow } from './ListRow'
 import { stringToColor } from '../utils/badges'
-import { getSession, orderHistory } from '../utils/sessions'
+import { getSession, orderHistory, sessionSnippet } from '../utils/sessions'
 
 type HistorySidebarProps = {
   open: boolean
@@ -46,7 +46,16 @@ export function HistorySidebar({
   onProfile,
   onLogin,
 }: HistorySidebarProps) {
-  const { pinned, rest } = useMemo(() => orderHistory(history, pins), [history, pins])
+  // Показываем только записи с сохранённой сессией — их можно открыть без списания токенов
+  const { pinned, rest, visibleCount } = useMemo(() => {
+    const p = orderHistory(history, pins)
+    const hasSession = (h: string) => Boolean(getSession(h))
+    return {
+      pinned: p.pinned.filter(hasSession),
+      rest: p.rest.filter(hasSession),
+      visibleCount: history.filter(hasSession).length,
+    }
+  }, [history, pins])
   const unpinnedCount = rest.length
   const displayName = user ? user.full_name || user.email : ''
   const first = displayName ? displayName[0].toUpperCase() : '?'
@@ -69,9 +78,7 @@ export function HistorySidebar({
         title={<span className="text-[13px] font-normal text-slate-700 dark:text-slate-200">{h}</span>}
         titleAttr={h}
         subtitle={
-          saved ? (
-            <span className="text-emerald-600/80 dark:text-emerald-400/80">бесплатно • токены целы</span>
-          ) : undefined
+          saved ? <span className="text-slate-400 dark:text-slate-500">{sessionSnippet(getSession(h))}</span> : undefined
         }
         onOpen={() => onPick(h)}
         titleOpenLabel={saved ? `Открыть сессию «${h}» бесплатно — токены не спишутся` : `Вставить «${h}» в поиск`}
@@ -118,7 +125,7 @@ export function HistorySidebar({
           <div className="flex-1 min-w-0">
             <div className="section-label">История поиска</div>
             <div className="text-[11px] text-slate-400 mt-0.5">
-              {history.length > 0 ? `${history.length} запр.` : 'Пока пусто'}
+              {visibleCount > 0 ? `${visibleCount} сес.` : 'Пока пусто'}
             </div>
           </div>
           <button
@@ -144,7 +151,7 @@ export function HistorySidebar({
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-2">
-          {history.length === 0 && (
+          {visibleCount === 0 && (
             <div className="mx-2 mt-2 rounded-xl border border-dashed border-slate-200 dark:border-slate-700 p-4 text-center">
               <div className="w-9 h-9 mx-auto rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400 flex items-center justify-center">
                 <Icon name="clock" size={16} />

@@ -251,7 +251,7 @@ export default function App() {
           </div>
           {/* Десктопные табы: на мобайле скрыты, вместо них нижний MobileNav */}
           <nav className="hidden md:flex items-center gap-0.5 shrink-0">
-            {(['search', 'docs', 'favorites', 'profile'] as const).map(t => (
+            {(['search', 'docs', ...(user ? ['favorites'] as const : []), 'profile'] as const).map(t => (
                 <button key={t} onClick={() => t === 'profile' ? goToProfile('overview') : setTab(t)} aria-label={t === 'favorites' && favCount > 0 ? `Избранное, ${favCount}` : undefined} className={`inline-flex items-center px-3 lg:px-4 py-2 text-[13px] lg:text-sm font-medium rounded-xl transition whitespace-nowrap ${tab === t ? 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white' : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'}`}>
                 <span className="truncate">{t === 'search' ? 'Поиск' : t === 'docs' ? 'Документы' : t === 'favorites' ? 'Избранное' : 'Профиль'}</span>
                 {t === 'favorites' && favCount > 0 && <span className="ml-1.5 shrink-0 min-w-[20px] h-5 px-1.5 rounded-full bg-slate-900 text-white dark:bg-white dark:text-slate-900 text-[10px] font-bold tabular-nums inline-flex items-center justify-center">{favCount > 99 ? '99+' : favCount}</span>}
@@ -299,7 +299,7 @@ export default function App() {
               <div className="text-center mb-4">
                 <img src="/logo-64.png" alt="snippy.llm" className="w-14 h-14 mx-auto rounded-xl object-cover ring-1 ring-slate-200 dark:ring-slate-700 bg-white" />
                 <h3 className="font-semibold text-slate-900 dark:text-white mt-3 text-lg">Войдите, чтобы продолжить</h3>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">300 токенов каждый час вместо 30 у гостей • бесплатно, без карты</p>
+                <p className="text-xs text-slate-600 dark:text-slate-300 mt-1">300 токенов каждый час вместо 30 у гостей<br /><span className="text-slate-400 dark:text-slate-500">бесплатно, без карты</span></p>
               </div>
               {authMode === 'login' ? <LoginForm onSwitch={() => setAuthMode('register')} onSuccess={() => setShowAuth(false)} /> : <RegisterForm onSwitch={() => setAuthMode('login')} onSuccess={() => setShowAuth(false)} />}
             </div>
@@ -370,7 +370,15 @@ export default function App() {
         />
       )}
 
-      {tab === 'favorites' && (
+      {tab === 'favorites' && !user && (
+        <div className="max-w-md mx-auto text-center py-16 px-4">
+          <div className="w-12 h-12 mx-auto rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400 flex items-center justify-center mb-4"><Icon name="lock" size={20} /></div>
+          <h2 className="font-semibold text-slate-900 dark:text-white">Избранное доступно после входа</h2>
+          <p className="text-sm text-slate-500 dark:text-slate-400 mt-2">Заметки хранятся в этом браузере и появятся снова, когда вы войдёте в аккаунт.</p>
+          <button onClick={() => { setAuthMode('login'); setShowAuth(true) }} className="btn btn-md btn-primary mt-5 px-6">Войти</button>
+        </div>
+      )}
+      {tab === 'favorites' && user && (
         <FavoritesView onOpenPdf={openPdf} user={user} />
       )}
 
@@ -422,7 +430,7 @@ export default function App() {
           </Suspense>
         </ErrorBoundary>
       )}
-      <MobileNav tab={tab} favCount={favCount} isAdmin={isAdmin} onGo={goMobile} />
+      <MobileNav tab={tab} favCount={favCount} isAdmin={isAdmin} user={user} onGo={goMobile} />
       <footer className="mt-auto border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
         <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between gap-3 text-[11px] text-slate-400 dark:text-slate-500">
           <span className="truncate" title="Ответ только при найденной норме; без источника — честно говорит «не найдено»">snippy.llm<span className="max-md:hidden"> • быстрый поиск 5 токенов • глубокий — 10 • нет источника → нет утверждения</span></span>

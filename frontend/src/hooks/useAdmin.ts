@@ -208,3 +208,14 @@ export async function restoreUserFromArchive(email: string): Promise<{ ok: boole
   if (!r.ok) throw new Error(d?.detail || d?.error || `restore ${r.status}`)
   return d
 }
+
+export async function saveDeletionTemplate(reasonId: string, text: string): Promise<{ ok: boolean }> {
+  const r = await authFetch(`${WORKER_BASE}/api/admin/settings`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key: `del_tpl_${reasonId}`, value: text }),
+  })
+  const d = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(d?.detail || d?.error || `save tpl ${r.status}`)
+  return d
+}

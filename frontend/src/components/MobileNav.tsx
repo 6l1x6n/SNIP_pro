@@ -12,17 +12,19 @@ const ICONS: Record<string, IconName> = {
   admin: 'shield',
 }
 
-export function MobileNav({ tab, favCount, isAdmin, onGo }: {
+export function MobileNav({ tab, favCount, isAdmin, user, onGo }: {
   tab: string
   favCount: number
   isAdmin: boolean
+  user: any
   onGo: (t: MobileTab) => void
 }) {
   const items: { id: MobileTab; label: string }[] = [
     { id: 'search', label: 'Поиск' },
     { id: 'docs', label: 'Документы' },
-    { id: 'favorites', label: 'Избранное' },
   ]
+  // Избранное — только для залогиненных: хранится локально, но недоступно гостю
+  if (user) items.push({ id: 'favorites', label: 'Избранное' })
   if (isAdmin) items.push({ id: 'admin', label: 'Админка' })
   items.push({ id: 'profile', label: 'Профиль' })
 

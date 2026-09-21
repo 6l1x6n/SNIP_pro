@@ -4210,6 +4210,19 @@ export default {
           const key = String(body.key ?? "");
           const def = SETTING_DEFS[key];
           const isLink = !def && (LLM_LINK_DEFS as string[]).includes(key);
+          // Шаблоны писем об удалении: строковые, до 2000 знаков (в отличие от числовых квот)
+          const isTpl = key.startsWith("del_tpl_") && DELETION_REASONS.some((r) => r.id === key.slice("del_tpl_".length));
+          if (isTpl) {
+            const text = String(body.value ?? "").trim().slice(0, 2000);
+            await ensureSettingsTable(env);
+            await env.DB.prepare(
+              "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at"
+            )
+              .bind(key, text, new Date().toISOString())
+              .run();
+            settingsCache = null;
+            return json({ ok: true, key, value: text }, 200, cors);
+          }
           if (!def && !isLink) return json({ error: "unknown_key" }, 400, cors);
           const value = Math.floor(Number(body.value));
           const min = def ? def.min : 0;
@@ -4298,9 +4311,20 @@ export default {
             cors
           );
         }
-        // GET /api/admin/deletion-reasons — список причин с шаблонами для модалки удаления
+        // GET /api/admin/deletion-reasons — причины с ЭФФЕКТИВНЫМИ шаблонами (правки админов из settings поверх дефолтов)
         if (url.pathname === "/api/admin/deletion-reasons" && req.method === "GET") {
-          return json({ reasons: DELETION_REASONS }, 200, cors);
+          const { values } = await getSettings(env);
+          return json(
+            {
+              reasons: DELETION_REASONS.map((r) => ({
+                ...r,
+                template: values[`del_tpl_${r.id}`]?.trim() || r.template,
+                custom: Boolean(values[`del_tpl_${r.id}`]?.trim()),
+              })),
+            },
+            200,
+            cors
+          );
         }
 
         // GET /api/admin/archived — архив удалённых аккаунтов (+ ленивая чистка просроченных)
@@ -4331,7 +4355,8 @@ export default {
           const nowIso = new Date().toISOString();
           const purgeAfter = new Date(Date.now() + ARCHIVE_DAYS * 86400000).toISOString();
           const name = normalizeName(user.full_name);
-          const text = buildDeletionText(name, String(body.reason_text ?? "").trim() || reason.template);
+          const tpl = ((await getSettings(env)).values[`del_tpl_${reason.id}`] ?? "").trim() || reason.template;
+          const text = buildDeletionText(name, String(body.reason_text ?? "").trim() || tpl);
           const subject = `user:${uid}`;
           const bal = await env.DB.prepare("SELECT credits FROM balances WHERE subject=?").bind(subject).first<{ credits: number }>();
           const take = bal?.credits ?? 0;

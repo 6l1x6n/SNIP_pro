@@ -53,7 +53,10 @@ export function RegisterForm({ onSwitch, onSuccess }: { onSwitch: () => void, on
   return (
     <form onSubmit={submit} className="space-y-3">
       <h3 className="font-semibold text-slate-900 dark:text-white">Регистрация</h3>
-      <p className="text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1.5"><Icon name="bolt" size={12} className="text-amber-500 shrink-0" /> Акция: 300 токенов каждый час после регистрации. Бесплатно, без карты.</p>
+      <p className="text-xs text-slate-600 dark:text-slate-300 flex items-start gap-1.5 leading-relaxed">
+        <Icon name="bolt" size={12} className="text-amber-500 shrink-0 mt-0.5" />
+        <span>300 токенов каждый час вместо 30 у гостей<br /><span className="text-slate-400 dark:text-slate-500">бесплатно, без карты</span></span>
+      </p>
       {err && <div className="text-xs bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 text-red-700 dark:text-red-300 rounded-xl p-2">{err}</div>}
       <input value={fullName} onChange={e=>setFullName(e.target.value)} placeholder="Имя (необязательно)" className="input" />
       <input value={email} onChange={e=>setEmail(e.target.value)} placeholder="Email" type="email" required className="input" />

@@ -4,7 +4,7 @@ import { SnakeState } from '../components/SnakeState'
 import { isAdminEmail } from '../utils/admin'
 import {
   fetchAdminStats, fetchAdminUsers, fetchAdminActivity, freezeUser,
-  fetchDeletionReasons, fetchArchivedUsers, deleteUserToArchive, restoreUserFromArchive,
+  fetchDeletionReasons, fetchArchivedUsers, deleteUserToArchive, restoreUserFromArchive, saveDeletionTemplate,
   type DeletionReason, type ArchivedUser,
   fetchAdminSettings, fetchAdminHealth, saveAdminSetting, displaySubject,
   fetchAdminFeedback,
@@ -157,6 +157,9 @@ export function AdminView({ user }: { user: any }) {
   const [delText, setDelText] = useState('')
   const [delBusy, setDelBusy] = useState(false)
   const [archived, setArchived] = useState<ArchivedUser[]>([])
+  const [tpls, setTpls] = useState<DeletionReason[]>([])
+  const [tplDraft, setTplDraft] = useState<Record<string, string>>({})
+  const [tplBusy, setTplBusy] = useState<string | null>(null)
   // feedback
   const [fbRating, setFbRating] = useState<'all' | '1' | '-1'>('all')
   const [fbItems, setFbItems] = useState<any[]>([])
@@ -212,8 +215,13 @@ export function AdminView({ user }: { user: any }) {
   useEffect(() => { loadStats() }, [])
   useEffect(() => { if (section === 'users' && !users.length) loadUsers(0) }, [section]) // eslint-disable-line
   useEffect(() => {
-    if (section !== 'archive' || archived.length) return
-    fetchArchivedUsers().then((d) => setArchived(d.archived)).catch(() => {})
+    if (section !== 'archive') return
+    if (!archived.length) fetchArchivedUsers().then((d) => setArchived(d.archived)).catch(() => {})
+    if (!tpls.length) fetchDeletionReasons().then((d) => {
+      setReasons(d.reasons)
+      setTpls(d.reasons)
+      setTplDraft(Object.fromEntries(d.reasons.map((r) => [r.id, r.template])))
+    }).catch(() => {})
   }, [section]) // eslint-disable-line
   useEffect(() => { if ((section === 'activity' || section === 'errors') && !acts.length) loadActs(0, kinds) }, [section])
   useEffect(() => { if ((section === 'quotas' || section === 'params') && !settings) loadSettings() }, [section])
@@ -503,6 +511,40 @@ export function AdminView({ user }: { user: any }) {
                 </div>
               ))}
               <button onClick={() => { setArchived([]); fetchArchivedUsers().then((d) => setArchived(d.archived)).catch(() => {}) }} className="btn btn-sm btn-secondary mt-3"><Icon name="refresh" size={12} /> Обновить</button>
+
+              <div className="mt-5 pt-4 border-t border-slate-100 dark:border-slate-800">
+                <div className="text-xs text-slate-400 mb-2">Шаблоны писем удалённым • имя подставится автоматически, обращение «Уважаемый …» добавится само</div>
+                <div className="space-y-3">
+                  {tpls.map((r) => (
+                    <div key={r.id} className="rounded-xl border border-slate-200 dark:border-slate-700 p-3">
+                      <div className="text-xs font-medium text-slate-700 dark:text-slate-200 mb-1.5 flex items-center gap-2">
+                        {r.title}
+                        {r.custom && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-100 dark:bg-violet-950/50 text-violet-600 dark:text-violet-300">изменён</span>}
+                      </div>
+                      <textarea
+                        value={tplDraft[r.id] ?? ''}
+                        onChange={(e) => setTplDraft((d) => ({ ...d, [r.id]: e.target.value }))}
+                        rows={3}
+                        className="input text-xs"
+                      />
+                      <div className="flex gap-2 mt-2">
+                        <button
+                          disabled={tplBusy === r.id || (tplDraft[r.id] ?? '') === r.template}
+                          onClick={async () => { setTplBusy(r.id); try { await saveDeletionTemplate(r.id, tplDraft[r.id] ?? ''); const d = await fetchDeletionReasons(); setTpls(d.reasons) } catch (e: any) { alert(e.message || 'Ошибка сохранения') } finally { setTplBusy(null) } }}
+                          className="btn btn-sm btn-primary py-1.5"
+                        >Сохранить</button>
+                        {r.custom && (
+                          <button
+                            disabled={tplBusy === r.id}
+                            onClick={async () => { setTplBusy(r.id); try { await saveDeletionTemplate(r.id, ''); const d = await fetchDeletionReasons(); setTpls(d.reasons); setTplDraft((x) => ({ ...x, [r.id]: d.reasons.find((z) => z.id === r.id)?.template ?? '' })) } catch (e: any) { alert(e.message || 'Ошибка сброса') } finally { setTplBusy(null) } }}
+                            className="btn btn-sm btn-secondary py-1.5"
+                          >Сбросить к стандартному</button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           )}
 
