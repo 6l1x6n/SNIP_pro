@@ -8,8 +8,9 @@ import { ConfirmDialog } from './ConfirmDialog'
 import { isAdminEmail, BILLING_DISABLED_HINT } from '../utils/admin'
 import { Icon } from './Icon'
 import { ListRow } from './ListRow'
+import { ResetTimer } from './ResetTimer'
 import {
-  fetchCredits, fetchCreditHistory, purchaseDemo, resetLabel,
+  fetchCredits, fetchCreditHistory, purchaseDemo,
   FAST_COST, DEEP_COST, CATALOG,
   type CreditsState, type LedgerItem,
 } from '../utils/credits'
@@ -232,7 +233,7 @@ export function CreditsPanel({ onTopUp }: { onTopUp?: () => void }) {
           <div className="text-xs text-blue-700 font-medium">{state.reset === 'daily' ? 'Дневной лимит (бесплатно)' : 'Часовой лимит (бесплатно)'}</div>
           <div className="text-2xl font-bold text-slate-900 dark:text-white mt-1">{state.daily.remaining}<span className="text-sm text-slate-500 dark:text-slate-400 font-normal"> / {state.daily.limit}</span></div>
           <div className="mt-2 h-1.5 rounded-full bg-white dark:bg-slate-900 overflow-hidden"><div className="h-full rounded-full bg-slate-900 dark:bg-white transition-all" style={{ width: `${pct}%` }} /></div>
-          <div className="text-[11px] text-blue-600 mt-1.5">{resetLabel(state, !!user)}{state.plan && state.plan !== 'free' ? ` • план повышает лимит` : ''}</div>
+          <div className="text-[11px] text-blue-600 mt-1.5">Обновляется каждый час • пополнение через <ResetTimer />{state.plan && state.plan !== 'free' ? ` • план повышает лимит` : ''}</div>
         </div>
         <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
           <div className="text-xs text-emerald-700 font-medium">Накопительный баланс</div>

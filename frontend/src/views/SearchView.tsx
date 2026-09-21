@@ -17,6 +17,7 @@ import { ValueCardModal } from '../components/ValueCardModal'
 import { ValueSourceCards } from '../components/ValueSourceCards'
 import { FeedbackBar } from '../components/FeedbackBar'
 import { Icon } from '../components/Icon'
+import { ResetTimer } from '../components/ResetTimer'
 import { ListRow } from '../components/ListRow'
 
 /** Короткие подписи провайдера ИИ-ответа (приходит из /ask, бейдж — только для не-Groq звеньев). */
@@ -736,9 +737,12 @@ export function SearchView(props: SearchViewProps) {
             <div className="w-12 h-12 mx-auto rounded-full bg-amber-100 dark:bg-amber-900/50 text-amber-600 dark:text-amber-300 flex items-center justify-center mb-3"><Icon name="bolt" size={22} /></div>
             {!user ? (
               <>
-                <div className="font-semibold text-slate-900 dark:text-white text-lg">Токены этого часа закончились</div>
+                <div className="font-semibold text-slate-900 dark:text-white text-lg">Токены закончились</div>
                 <div className="text-sm text-slate-600 dark:text-slate-300 mt-2 max-w-md mx-auto">
-                  Через час обновятся сами. А после регистрации — 300 токенов каждый час и накопительный баланс.
+                  Следующие 30 придут через <ResetTimer />.
+                </div>
+                <div className="text-sm font-medium text-amber-700 dark:text-amber-300 mt-1">
+                  Регистрация — 300 токенов каждый час. Бесплатно.
                 </div>
                 <div className="mt-4 flex items-center justify-center gap-3 flex-wrap max-md:flex-col max-md:items-stretch">
                   <button onClick={() => { setAuthMode('register'); setShowAuth(true) }} className="btn btn-md btn-primary px-6 py-2.5 max-md:w-full">Регистрация — бесплатно</button>

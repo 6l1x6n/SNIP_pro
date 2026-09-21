@@ -151,11 +151,11 @@ export function dispatchCredits(state?: CreditsState | null): void {
   window.dispatchEvent(new CustomEvent('snip:credits', { detail: state }))
 }
 
-/** Подпись периода обновления лимита: у всех почасовой (гости 30, зарегистрированные 300). */
-export function resetLabel(c: CreditsState | null, isUser: boolean): string {
-  void c
-  void isUser
-  return 'Обновляется каждый час'
+/** Минут до следующего почасового сброса. Период воркера — верх UTC-часа (hourKey), считаем локально. */
+export function minutesToNextReset(): number {
+  const now = new Date()
+  const next = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours() + 1)
+  return Math.max(1, Math.ceil((next - now.getTime()) / 60000))
 }
 
 /** Смена отображаемого имени (кулдаун 30 дней на сервере, первая установка свободна). */

@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
-import { fetchCredits, availableTotal, type CreditsState } from '../utils/credits'
+import {
+  minutesToNextReset, fetchCredits, availableTotal, type CreditsState } from '../utils/credits'
 import { useAuth } from '../context/AuthContext'
 import { Icon } from './Icon'
 
@@ -58,7 +59,7 @@ export function CreditsBadge({ onOpenUsage }: { onOpenUsage?: () => void }) {
   return (
     <button
       onClick={onOpenUsage}
-      title={`Доступно: ${total} токенов\n• Часовой лимит: ${state.daily.remaining} из ${state.daily.limit}\n• Накопительный баланс: ${state.balance}${state.plan ? `\n• План: ${state.plan}` : ''}\nНажмите, чтобы открыть «Использование»`}
+      title={`Доступно: ${total} токенов\n• Часовой лимит: ${state.daily.remaining} из ${state.daily.limit} (следующий период через ~${minutesToNextReset()} мин)\n• Накопительный баланс: ${state.balance}${state.plan ? `\n• План: ${state.plan}` : ''}\nНажмите, чтобы открыть «Использование»`}
       className={`${shell} hover:border-slate-400 dark:hover:border-slate-500 cursor-pointer text-left`}
     >
       <Icon name="bolt" size={14} className={low ? 'text-amber-500' : 'text-slate-400 dark:text-slate-500'} />
