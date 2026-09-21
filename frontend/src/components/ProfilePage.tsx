@@ -64,17 +64,17 @@ function useTelegramLink(user: any) {
 function TelegramLink({ tg }: { tg: ReturnType<typeof useTelegramLink> }) {
   const { linkedName, busy, waiting, err, link, unlink } = tg
   return (
-    <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl p-4 border border-slate-200 dark:border-slate-700">
+    <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl px-3 py-2.5 border border-slate-200 dark:border-slate-700">
       <div className="text-xs text-slate-500 dark:text-slate-400">Telegram</div>
       {linkedName ? (
         <>
-          <div className="font-medium text-slate-900 dark:text-white mt-1.5">{linkedName.startsWith('@') ? linkedName : `@${linkedName}`}</div>
-          <button onClick={unlink} disabled={busy} className="text-xs text-slate-400 hover:text-red-500 mt-2 underline">Отвязать</button>
+          <div className="font-medium text-slate-900 dark:text-white mt-0.5">{linkedName.startsWith('@') ? linkedName : `@${linkedName}`}</div>
+          <button onClick={unlink} disabled={busy} className="text-xs text-slate-400 hover:text-red-500 mt-1 underline">Отвязать</button>
         </>
       ) : (
         <>
-          <div className="font-medium text-slate-900 dark:text-white mt-1.5">Не привязан</div>
-          <button onClick={link} disabled={busy || waiting} className="text-xs text-blue-600 dark:text-blue-400 hover:underline mt-2">
+          <div className="font-medium text-slate-900 dark:text-white mt-0.5">Не привязан</div>
+          <button onClick={link} disabled={busy || waiting} className="text-xs text-blue-600 dark:text-blue-400 hover:underline mt-1">
             {waiting ? 'Ждём подтверждения в боте…' : busy ? 'Готовим ссылку…' : 'Привязать'}
           </button>
         </>
@@ -379,7 +379,6 @@ function NameEditor() {
   const isFirst = !user.full_name
   const cooldownUntil = user.name_can_change_at ? new Date(user.name_can_change_at) : null
   const locked = !!cooldownUntil && cooldownUntil.getTime() > Date.now() && !isFirst
-  const daysLeft = locked && cooldownUntil ? Math.ceil((cooldownUntil.getTime() - Date.now()) / 86400000) : 0
 
   const doSave = async () => {
     const v = value.replace(/\s+/g, ' ').trim()
@@ -402,19 +401,19 @@ function NameEditor() {
     <div>
       {!editing ? (
         <div>
-          <div className="font-medium text-slate-900 dark:text-white mt-1.5 truncate">{current}</div>
-          <div className="text-[11px] text-slate-400 mt-1.5">
-            {isFirst ? 'Установите имя — дальше смена раз в 30 дней' : locked
-              ? `Смена доступна с ${cooldownUntil!.toLocaleDateString('ru-RU')} (осталось ${daysLeft} дн.)`
-              : 'Имя можно менять раз в 30 дней'}
+          <div className="font-medium text-slate-900 dark:text-white mt-0.5 truncate">{current}</div>
+          <div className="text-[11px] text-slate-400 mt-1">
+            {isFirst ? 'Дальше смена раз в 30 дней' : locked
+              ? `Смена с ${cooldownUntil!.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })}`
+              : 'Смена раз в 30 дней'}
           </div>
           {err && <div className="text-[11px] text-red-600 mt-1">{err}</div>}
           <button
             onClick={() => { setErr(null); setValue(user.full_name ?? ''); setEditing(true) }}
             disabled={locked}
             title={locked ? `Подождите до ${cooldownUntil!.toLocaleDateString('ru-RU')}` : 'Изменить имя'}
-            className="btn btn-sm btn-secondary mt-2"
-          ><Icon name="edit" size={12} /> Изменить имя</button>
+            className="btn btn-sm btn-secondary mt-1.5 py-1"
+          ><Icon name="edit" size={12} /> Изменить</button>
         </div>
       ) : (
         <div className="mt-1.5">
@@ -635,11 +634,11 @@ export function ProfilePage({ stats, docs, onLogout, highlightPalette, setHighli
                   </div>
                 </div>
                 <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
-                  <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl p-4 border border-slate-200 dark:border-slate-700">
+                  <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl px-3 py-2.5 border border-slate-200 dark:border-slate-700">
                     <div className="text-xs text-slate-500 dark:text-slate-400">Email</div>
-                    <div className="font-medium text-slate-900 dark:text-white mt-1.5 break-all">{user.email}</div>
+                    <div className="font-medium text-slate-900 dark:text-white mt-0.5 break-all">{user.email}</div>
                   </div>
-                  <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl p-4 border border-slate-200 dark:border-slate-700">
+                  <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl px-3 py-2.5 border border-slate-200 dark:border-slate-700">
                     <div className="text-xs text-slate-500 dark:text-slate-400">Имя</div>
                     <NameEditor />
                   </div>
