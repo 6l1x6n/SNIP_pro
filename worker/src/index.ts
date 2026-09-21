@@ -8,6 +8,11 @@ export interface Env {
   JWT_SECRET: string;
   GROQ_API_KEY: string;
   GEMINI_API_KEY: string;
+  GEMINI_API_KEY_2?: string;
+  GEMINI_API_KEY_3?: string;
+  GEMINI_API_KEY_4?: string;
+  GEMINI_TEXT_MODEL?: string;
+  GEMINI_ALT_MODEL?: string;
   GROQ_MODEL: string;
   EMBED_MODEL: string;
   INDEX_BASE_URL: string; // https://snippy-llm.pages.dev/index
@@ -19,7 +24,6 @@ export interface Env {
   FOLLOWUP_COST?: string; // 5 — уточняющий вопрос к ответу
   NORMS?: R2Bucket; // опционально: включается после активации R2 (см. wrangler.toml)
   AI?: any; // опционально: Workers AI binding ([ai] в wrangler.toml) — звено фолбэка
-  GEMINI_TEXT_MODEL?: string; // опционально: модель Gemini для фолбэка (дефолт gemini-2.0-flash)
   EXPLAIN_DAILY_CAP?: string; // дефолт 40 объяснений/день подписчику
   // Резервные эмбеддинг-провайдеры (нужен только тот, кем собран текущий индекс —
   // см. provider в index/manifest.json; секреты: npx wrangler secret put <ИМЯ>)
@@ -1747,7 +1751,9 @@ async function getSettings(env: Env): Promise<{ values: Record<string, string>; 
       updated_at: string;
     }>();
     for (const r of rows.results ?? []) {
-      if (SETTING_DEFS[r.key]) {
+      // llm_* (kill-switchи звеньев) и budget_* — обе группы должны доходить из D1:
+      // раньше фильтр по SETTING_DEFS отбрасывал llm_*, и тумблеры админки не работали
+      if (SETTING_DEFS[r.key] || r.key.startsWith("llm_")) {
         values[r.key] = r.value;
         updated[r.key] = r.updated_at;
       }
@@ -2178,11 +2184,12 @@ async function groqText(env: Env, model: string, prompt: string, maxTokens: numb
   return text;
 }
 
-async function geminiText(env: Env, prompt: string, maxTokens: number): Promise<string> {
-  const model = env.GEMINI_TEXT_MODEL ?? "gemini-2.0-flash";
-  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+async function geminiText(env: Env, prompt: string, maxTokens: number, key?: string, model?: string): Promise<string> {
+  const m = model ?? env.GEMINI_TEXT_MODEL ?? "gemini-2.0-flash";
+  const k = key ?? env.GEMINI_API_KEY;
+  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
+    headers: { "Content-Type": "application/json", "x-goog-api-key": k },
     body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.1, maxOutputTokens: maxTokens } }),
     signal: AbortSignal.timeout(20000),
   });
@@ -2357,6 +2364,14 @@ export async function fallbackLinks(env: Env): Promise<LlmLink[]> {
   }
   if ((await llmEnabled(env, "llm_gemini")) && env.GEMINI_API_KEY) {
     links.push({ id: "gemini", variant: "", run: (p, t) => geminiText(env, p, t) });
+    // alt-ключи (другие Google-проекты → свои квоты): Flash-Lite — дневной лимит в разы выше,
+    // качество ниже — терпимо для фолбэк-позиции. Бюджет считается per-вариант (budget_gemini на каждый).
+    const altModel = env.GEMINI_ALT_MODEL ?? "gemini-2.5-flash-lite";
+    const altKeys: Array<[string, string | undefined]> = [["alt-2", env.GEMINI_API_KEY_2], ["alt-3", env.GEMINI_API_KEY_3], ["alt-4", env.GEMINI_API_KEY_4]];
+    for (const [variant, key] of altKeys) {
+      if (!key) continue;
+      links.push({ id: "gemini", variant, run: (p, t) => geminiText(env, p, t, key, altModel) });
+    }
   }
   if ((await llmEnabled(env, "llm_cerebras")) && env.CEREBRAS_API_KEY) {
     links.push({ id: "cerebras", variant: "", run: (p, t) => cerebrasText(env, p, t) });
@@ -4046,7 +4061,12 @@ export default {
                 llm: { provider: "groq", model: env.GROQ_MODEL ?? "", fallback: false },
                 llm_fallbacks: [
                   { id: "groq-alt", key_set: !!env.GROQ_API_KEY },
-                  { id: "gemini", key_set: !!env.GEMINI_API_KEY },
+                  {
+                    id: "gemini",
+                    key_set: !!env.GEMINI_API_KEY,
+                    alts: [env.GEMINI_API_KEY_2, env.GEMINI_API_KEY_3, env.GEMINI_API_KEY_4].filter(Boolean).length,
+                    alt_model: env.GEMINI_ALT_MODEL ?? "gemini-2.5-flash-lite",
+                  },
                   { id: "cerebras", key_set: !!env.CEREBRAS_API_KEY },
                   { id: "openrouter", key_set: !!env.OPENROUTER_API_KEY },
                   { id: "deepseek", key_set: !!env.DEEPSEEK_API_KEY },
