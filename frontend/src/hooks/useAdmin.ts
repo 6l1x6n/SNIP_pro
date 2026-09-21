@@ -219,3 +219,33 @@ export async function saveDeletionTemplate(reasonId: string, text: string): Prom
   if (!r.ok) throw new Error(d?.detail || d?.error || `save tpl ${r.status}`)
   return d
 }
+
+// ---------- Сброс пароля: заявки пользователей, ручная выдача кода ----------
+
+export interface ResetRequest {
+  email: string; created_at: string; expires_at: string; state: 'pending' | 'coded';
+}
+
+export const fetchResetRequests = () => get<{ requests: ResetRequest[] }>('/api/admin/reset-requests')
+
+export async function approveReset(email: string): Promise<{ ok: boolean; code: string; expires_in_minutes: number }> {
+  const r = await authFetch(`${WORKER_BASE}/api/admin/reset-approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  })
+  const d = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(d?.detail || d?.error || `approve ${r.status}`)
+  return d
+}
+
+export async function rejectReset(email: string): Promise<{ ok: boolean }> {
+  const r = await authFetch(`${WORKER_BASE}/api/admin/reset-reject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  })
+  const d = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(d?.detail || d?.error || `reject ${r.status}`)
+  return d
+}

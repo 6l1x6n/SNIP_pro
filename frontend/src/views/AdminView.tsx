@@ -5,6 +5,8 @@ import { isAdminEmail } from '../utils/admin'
 import {
   fetchAdminStats, fetchAdminUsers, fetchAdminActivity, freezeUser,
   fetchDeletionReasons, fetchArchivedUsers, deleteUserToArchive, restoreUserFromArchive, saveDeletionTemplate,
+  fetchResetRequests, approveReset, rejectReset,
+  type ResetRequest,
   type DeletionReason, type ArchivedUser,
   fetchAdminSettings, fetchAdminHealth, saveAdminSetting, displaySubject,
   fetchAdminFeedback,
@@ -22,7 +24,7 @@ const PROVIDER_LABEL: Record<string, string> = {
   mistral: 'Mistral',
 }
 
-type SectionId = 'overview' | 'quotas' | 'users' | 'archive' | 'activity' | 'errors' | 'params' | 'feedback'
+type SectionId = 'overview' | 'quotas' | 'users' | 'archive' | 'resets' | 'activity' | 'errors' | 'params' | 'feedback'
 
 const SECTIONS: { id: SectionId; label: string }[] = [
   { id: 'overview', label: 'Обзор' },
@@ -30,6 +32,7 @@ const SECTIONS: { id: SectionId; label: string }[] = [
   { id: 'feedback', label: 'Фидбек' },
   { id: 'users', label: 'Пользователи' },
   { id: 'archive', label: 'Архив' },
+  { id: 'resets', label: 'Сбросы пароля' },
   { id: 'activity', label: 'Активность' },
   { id: 'errors', label: 'Ошибки' },
   { id: 'params', label: 'Параметры' },
@@ -160,6 +163,8 @@ export function AdminView({ user }: { user: any }) {
   const [tpls, setTpls] = useState<DeletionReason[]>([])
   const [tplDraft, setTplDraft] = useState<Record<string, string>>({})
   const [tplBusy, setTplBusy] = useState<string | null>(null)
+  const [resets, setResets] = useState<ResetRequest[]>([])
+  const [issuedCode, setIssuedCode] = useState<{ email: string; code: string } | null>(null)
   // feedback
   const [fbRating, setFbRating] = useState<'all' | '1' | '-1'>('all')
   const [fbItems, setFbItems] = useState<any[]>([])
@@ -215,6 +220,7 @@ export function AdminView({ user }: { user: any }) {
   useEffect(() => { loadStats() }, [])
   useEffect(() => { if (section === 'users' && !users.length) loadUsers(0) }, [section]) // eslint-disable-line
   useEffect(() => {
+    if (section === 'resets') fetchResetRequests().then((d) => setResets(d.requests)).catch(() => {})
     if (section !== 'archive') return
     if (!archived.length) fetchArchivedUsers().then((d) => setArchived(d.archived)).catch(() => {})
     if (!tpls.length) fetchDeletionReasons().then((d) => {
@@ -598,7 +604,50 @@ export function AdminView({ user }: { user: any }) {
                 />
                 )
               })}
-              {section === 'activity' && (
+              {section === 'resets' && (
+            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
+              <div className="text-xs text-slate-400 mb-2">Заявки «Забыли пароль?» • выдайте код и передайте пользователю лично (код живёт 1 час, показывается один раз)</div>
+              {!resets.length && <div className="text-sm text-slate-500">Заявок нет.</div>}
+              {resets.map((r) => (
+                <div key={r.email} className="flex items-center gap-2 text-xs py-2 border-b border-slate-100 dark:border-slate-800 last:border-0">
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium text-slate-800 dark:text-slate-100 truncate">{r.email}</div>
+                    <div className="text-slate-400">
+                      заявка от {new Date(r.created_at).toLocaleString('ru-RU')} •{' '}
+                      {r.state === 'pending'
+                        ? 'ждёт выдачи кода'
+                        : <>код выдан, действует до {new Date(r.expires_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</>}
+                    </div>
+                  </div>
+                  <button
+                    onClick={async () => { try { const d = await approveReset(r.email); setIssuedCode({ email: r.email, code: d.code }); fetchResetRequests().then((x) => setResets(x.requests)) } catch (e: any) { alert(e.message || 'Ошибка') } }}
+                    className="btn btn-sm btn-primary py-1.5 shrink-0 w-[110px] justify-center"
+                  >{r.state === 'pending' ? 'Выдать код' : 'Перевыдать'}</button>
+                  <button
+                    onClick={async () => { if (!confirm(`Отклонить заявку ${r.email}?`)) return; try { await rejectReset(r.email); setResets((prev) => prev.filter((x) => x.email !== r.email)) } catch (e: any) { alert(e.message || 'Ошибка') } }}
+                    className="btn btn-sm btn-secondary py-1.5 shrink-0 w-[110px] justify-center"
+                  >Отклонить</button>
+                </div>
+              ))}
+              <button onClick={() => fetchResetRequests().then((d) => setResets(d.requests)).catch(() => {})} className="btn btn-sm btn-secondary mt-3"><Icon name="refresh" size={12} /> Обновить</button>
+            </div>
+          )}
+
+          {issuedCode && (
+            <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setIssuedCode(null)}>
+              <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 p-5 max-w-sm w-full text-center space-y-3" onClick={(e) => e.stopPropagation()}>
+                <div className="text-xs text-slate-500 dark:text-slate-400">Код для <b className="text-slate-700 dark:text-slate-200 break-all">{issuedCode.email}</b> — живёт 1 час, больше не покажется:</div>
+                <div className="text-3xl font-bold tracking-[0.35em] font-mono text-slate-900 dark:text-white select-all">{issuedCode.code}</div>
+                <button
+                  onClick={() => { navigator.clipboard?.writeText(issuedCode.code); }}
+                  className="btn btn-sm btn-secondary w-full justify-center"
+                ><Icon name="copy" size={12} /> Скопировать</button>
+                <button onClick={() => setIssuedCode(null)} className="btn btn-md btn-primary w-full py-2">Передал — закрыть</button>
+              </div>
+            </div>
+          )}
+
+          {section === 'activity' && (
                 <div className="flex gap-2 mt-3">
                   <button disabled={aOff === 0} onClick={() => loadActs(aOff - 50, kinds)} className="btn btn-sm btn-secondary"><Icon name="arrowLeft" size={12} /> Назад</button>
                   <button disabled={aOff + 50 >= aTotal} onClick={() => loadActs(aOff + 50, kinds)} className="btn btn-sm btn-secondary">Вперёд <Icon name="arrowRight" size={12} /></button>

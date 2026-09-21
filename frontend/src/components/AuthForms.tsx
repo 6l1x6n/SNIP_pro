@@ -32,7 +32,8 @@ export function ForgotPasswordFlow({ onBack }: { onBack: () => void }) {
       })
       const d = await r.json().catch(() => ({}))
       if (!r.ok) { setErr(d.detail || d.error || 'Не удалось отправить заявку'); return }
-      setInfo(null); setStep('confirm')
+      setInfo('Заявка принята. Администратор выдаст вам код (обычно в течение дня) — вопросы: postalarchive@gmail.com')
+      setStep('confirm')
     } catch { setErr('Не удалось соединиться с сервером') } finally { setLoading(false) }
   }
 
@@ -66,8 +67,9 @@ export function ForgotPasswordFlow({ onBack }: { onBack: () => void }) {
 
   if (step === 'confirm') return (
     <form onSubmit={confirm} className="space-y-3">
-      <h3 className="font-semibold text-slate-900 dark:text-white">Код из письма</h3>
-      <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">Отправили 6-значный код на <b className="text-slate-700 dark:text-slate-200 break-all">{email}</b>.<br />Не пришло — проверьте папку «Спам».</p>
+      <h3 className="font-semibold text-slate-900 dark:text-white">Код подтверждения</h3>
+      <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">Введите 6-значный код, который вам выдал администратор, и задайте новый пароль для <b className="text-slate-700 dark:text-slate-200 break-all">{email}</b>.</p>
+      {info && <div className="text-xs bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900 text-blue-700 dark:text-blue-300 rounded-xl p-2 leading-relaxed">{info}</div>}
       {err && <div className="text-xs bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 text-red-700 dark:text-red-300 rounded-xl p-2">{err}</div>}
       <input value={code} onChange={e => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="6-значный код" inputMode="numeric" autoComplete="one-time-code" required className="input tracking-[0.3em] font-mono" />
       <input value={password} onChange={e => setPassword(e.target.value)} placeholder="Новый пароль (мин 6)" type="password" required minLength={6} className="input" />
@@ -81,11 +83,12 @@ export function ForgotPasswordFlow({ onBack }: { onBack: () => void }) {
   return (
     <form onSubmit={request} className="space-y-3">
       <h3 className="font-semibold text-slate-900 dark:text-white">Восстановление входа</h3>
-      <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">Пришлём 6-значный код на почту — с ним зададите новый пароль.</p>
+      <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">Оставьте заявку — администратор рассмотрит её и выдаст вам одноразовый код. Получили код? Вводите сразу ниже.</p>
       {info && <div className="text-xs bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900 text-blue-700 dark:text-blue-300 rounded-xl p-2">{info}</div>}
       {err && <div className="text-xs bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 text-red-700 dark:text-red-300 rounded-xl p-2">{err}</div>}
       <input value={email} onChange={e => setEmail(e.target.value)} placeholder="Email аккаунта" type="email" required className="input" />
-      <button disabled={loading} className="btn btn-md btn-primary w-full py-2.5">{loading ? 'Отправляем…' : 'Получить код'}</button>
+      <button disabled={loading} className="btn btn-md btn-primary w-full py-2.5">{loading ? 'Отправляем…' : 'Оставить заявку'}</button>
+      <button type="button" onClick={() => setStep('confirm')} className="w-full text-xs text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200">Уже есть код — ввести</button>
       {backLink}
     </form>
   )

@@ -3420,7 +3420,8 @@ export default {
         );
       }
 
-      // POST /api/auth/reset-request {email} — заявка на сброс: код на почту (Brevo → SendGrid).
+      // POST /api/auth/reset-request {email} — заявка на сброс. Код выдаёт администратор
+      // вручную (мейлеры отключены: телефонная верификация провайдеров недоступна).
       // Ответ всегда нейтральный: существование аккаунта не раскрываем.
       if (url.pathname === "/api/auth/reset-request" && req.method === "POST") {
         const body = (await req.json().catch(() => ({}))) as any;
@@ -3434,37 +3435,24 @@ export default {
         else if (tr.n >= 3) return json({ error: "reset_limit", detail: "Слишком много заявок — попробуйте через час" }, 429, cors);
         else tr.n += 1;
 
-        if (!env.BREVO_API_KEY && !env.SENDGRID_API_KEY)
-          return json({ error: "mailer_not_configured", detail: "Восстановление по почте временно недоступно" }, 503, cors);
-
         const user = await env.DB.prepare("SELECT id FROM users WHERE email=?").bind(email).first();
         const archived = await env.DB.prepare("SELECT email FROM archived_users WHERE email=?").bind(email).first();
         if (!user || archived)
-          return json({ ok: true, detail: "Если почта зарегистрирована, письмо с кодом отправлено" }, 200, cors);
+          return json({ ok: true, detail: "Заявка принята — администратор рассмотрит её" }, 200, cors);
 
-        const code = makeResetCode();
-        const expires = new Date(nowMs + 30 * 60_000).toISOString();
+        // Заявка живёт 7 дней: за это время админ выдаёт код (код_hash='pending' до одобрения)
         await ensureResetTable(env);
         await purgeExpiredResets(env);
         await env.DB.prepare(
-          "INSERT INTO password_resets (email, code_hash, expires_at, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(email) DO UPDATE SET code_hash=excluded.code_hash, expires_at=excluded.expires_at, created_at=excluded.created_at, used_at=NULL"
+          "INSERT INTO password_resets (email, code_hash, expires_at, created_at) VALUES (?, 'pending', ?, ?) ON CONFLICT(email) DO UPDATE SET code_hash='pending', expires_at=excluded.expires_at, created_at=excluded.created_at, used_at=NULL"
         )
-          .bind(email, await hashPassword(code), expires, new Date().toISOString())
+          .bind(email, new Date(nowMs + 7 * 86400000).toISOString(), new Date().toISOString())
           .run();
-        try {
-          await sendMail(
-            env,
-            email,
-            `${code} — код восстановления snippy.llm`,
-            `Код для сброса пароля: ${code}\n\nЖивёт 30 минут. Если это были не вы — просто игнорируйте письмо, пароль не изменится.`
-          );
-        } catch (e: any) {
-          if (e?.message === "mailer_not_configured")
-            return json({ error: "mailer_not_configured", detail: "Восстановление по почте временно недоступно" }, 503, cors);
-          console.error(`[reset] mailer failed: ${String(e?.message ?? e).slice(0, 160)}`);
-          return json({ error: "mailer_failed", detail: "Не удалось отправить письмо — попробуйте чуть позже" }, 502, cors);
-        }
-        return json({ ok: true, detail: "Если почта зарегистрирована, письмо с кодом отправлено" }, 200, cors);
+        return json(
+          { ok: true, detail: "Заявка принята. Администратор выдаст вам одноразовый код — свяжитесь с поддержкой: postalarchive@gmail.com" },
+          200,
+          cors
+        );
       }
 
       // POST /api/auth/reset-confirm {email, code, password} — смена пароля по коду из письма
@@ -4478,6 +4466,49 @@ export default {
             cors
           );
         }
+        // GET /api/admin/reset-requests — заявки на сброс пароля (ожидающие + с выданным кодом)
+        if (url.pathname === "/api/admin/reset-requests" && req.method === "GET") {
+          await ensureResetTable(env);
+          await purgeExpiredResets(env);
+          const rows = await env.DB.prepare(
+            "SELECT email, code_hash, created_at, expires_at FROM password_resets ORDER BY created_at DESC LIMIT 100"
+          ).all();
+          const requests = (rows.results ?? []).map((r: any) => ({
+            email: r.email,
+            created_at: r.created_at,
+            expires_at: r.expires_at,
+            state: r.code_hash === "pending" ? "pending" : "coded",
+          }));
+          return json({ requests }, 200, cors);
+        }
+
+        // POST /api/admin/reset-approve {email} — выдать одноразовый код (возвращается один раз, хранится хешем)
+        if (url.pathname === "/api/admin/reset-approve" && req.method === "POST") {
+          const body = (await req.json().catch(() => ({}))) as any;
+          const email = String(body.email ?? "").slice(0, 200);
+          if (!email) return json({ error: "email required" }, 400, cors);
+          await ensureResetTable(env);
+          const exists = await env.DB.prepare("SELECT email FROM password_resets WHERE email=?").bind(email).first();
+          if (!exists) return json({ error: "not found" }, 404, cors);
+          const code = makeResetCode();
+          await env.DB.prepare(
+            "UPDATE password_resets SET code_hash=?, expires_at=? WHERE email=?"
+          )
+            .bind(await hashPassword(code), new Date(Date.now() + 3600_000).toISOString(), email)
+            .run();
+          return json({ ok: true, code, expires_in_minutes: 60 }, 200, cors);
+        }
+
+        // POST /api/admin/reset-reject {email} — отклонить заявку
+        if (url.pathname === "/api/admin/reset-reject" && req.method === "POST") {
+          const body = (await req.json().catch(() => ({}))) as any;
+          const email = String(body.email ?? "").slice(0, 200);
+          if (!email) return json({ error: "email required" }, 400, cors);
+          await ensureResetTable(env);
+          await env.DB.prepare("DELETE FROM password_resets WHERE email=?").bind(email).run();
+          return json({ ok: true }, 200, cors);
+        }
+
         // GET /api/admin/deletion-reasons — причины с ЭФФЕКТИВНЫМИ шаблонами (правки админов из settings поверх дефолтов)
         if (url.pathname === "/api/admin/deletion-reasons" && req.method === "GET") {
           const { values } = await getSettings(env);
