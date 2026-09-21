@@ -13,6 +13,11 @@ export interface Env {
   GEMINI_API_KEY_4?: string;
   GEMINI_TEXT_MODEL?: string;
   GEMINI_ALT_MODEL?: string;
+  // Почта (восстановление пароля): каскад Brevo → SendGrid, письма от верифицированного отправителя
+  BREVO_API_KEY?: string;
+  SENDGRID_API_KEY?: string;
+  MAIL_FROM?: string; // дефолт postalarchive@gmail.com — тот, что верифицирован у провайдера
+  MAIL_FROM_NAME?: string; // дефолт snippy.llm
   GROQ_MODEL: string;
   EMBED_MODEL: string;
   INDEX_BASE_URL: string; // https://snippy-llm.pages.dev/index
@@ -102,6 +107,82 @@ export function buildDeletionText(name: string | null, template: string): string
   return `Уважаемый ${who}! ${String(template ?? "").trim().replaceAll("{имя}", who)}`;
 }
 
+// ---------- Почта: каскад Brevo → SendGrid (восстановление пароля) ----------
+
+export function makeResetCode(): string {
+  // 6 цифр: знакомый формат, перепечатывается с телефона; перебор закрыт лимитом попыток
+  return String(crypto.getRandomValues(new Uint32Array(1))[0] % 1000000).padStart(6, "0");
+}
+
+/** Отправка письма каскадом Brevo → SendGrid. Возвращает имя удавшегося провайдера. */
+export async function sendMail(env: Env, to: string, subject: string, text: string): Promise<string> {
+  const from = env.MAIL_FROM ?? "postalarchive@gmail.com";
+  const fromName = env.MAIL_FROM_NAME ?? "snippy.llm";
+  const errors: string[] = [];
+  if (env.BREVO_API_KEY) {
+    try {
+      const r = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "api-key": env.BREVO_API_KEY, Accept: "application/json" },
+        body: JSON.stringify({
+          sender: { email: from, name: fromName },
+          to: [{ email: to }],
+          subject,
+          textContent: text,
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (r.ok) return "brevo";
+      errors.push(`brevo ${r.status}`);
+    } catch (e: any) {
+      errors.push(`brevo ${String(e?.message ?? e).slice(0, 60)}`);
+    }
+  }
+  if (env.SENDGRID_API_KEY) {
+    try {
+      const r = await fetch("https://api.sendgrid.com/v3/mail/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.SENDGRID_API_KEY}` },
+        body: JSON.stringify({
+          personalizations: [{ to: [{ email: to }] }],
+          from: { email: from, name: fromName },
+          subject,
+          content: [{ type: "text/plain", value: text }],
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (r.ok) return "sendgrid";
+      errors.push(`sendgrid ${r.status}`);
+    } catch (e: any) {
+      errors.push(`sendgrid ${String(e?.message ?? e).slice(0, 60)}`);
+    }
+  }
+  if (!env.BREVO_API_KEY && !env.SENDGRID_API_KEY)
+    throw Object.assign(new Error("mailer_not_configured"), { status: 503 });
+  throw Object.assign(new Error(`mailer failed: ${errors.join(", ")}`), { status: 502 });
+}
+
+async function ensureResetTable(env: Env): Promise<void> {
+  try {
+    await env.DB.prepare(
+      "CREATE TABLE IF NOT EXISTS password_resets (email TEXT PRIMARY KEY, code_hash TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, used_at TEXT)"
+    ).run();
+  } catch {
+    /* уже есть — ок */
+  }
+}
+
+/** Просроченные/использованные заявки чистятся при касании (без крона). */
+export async function purgeExpiredResets(env: Env): Promise<void> {
+  try {
+    await env.DB.prepare("DELETE FROM password_resets WHERE expires_at < ? OR used_at IS NOT NULL")
+      .bind(new Date().toISOString())
+      .run();
+  } catch {
+    /* таблицы может не быть — ок */
+  }
+}
+
 const CORS_HEADERS = (env: Env, origin: string | null): Record<string, string> => {
   const allowed = env.ALLOWED_ORIGINS.split(",").map((s) => s.trim());
   // «https://*.pages.dev» — звёздочка в начале хоста: матчим через regex,
@@ -148,14 +229,14 @@ const json = (data: unknown, status = 200, headers: Record<string, string> = {})
 
 // ---------- PBKDF2 пароль-хеширование ----------
 
-async function hashPassword(password: string, saltHex?: string): Promise<string> {
+export async function hashPassword(password: string, saltHex?: string): Promise<string> {
   const salt = saltHex ? hexToBuf(saltHex) : crypto.getRandomValues(new Uint8Array(16));
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
   const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations: 100_000 }, key, 256);
   return bufToHex(salt) + "$" + bufToHex(new Uint8Array(bits));
 }
 
-function verifyPassword(password: string, stored: string): Promise<boolean> {
+export function verifyPassword(password: string, stored: string): Promise<boolean> {
   const [saltHex] = stored.split("$");
   return hashPassword(password, saltHex).then((h) => h === stored);
 }
@@ -3042,6 +3123,9 @@ const VOICE_MAX_BYTES = 3 * 1024 * 1024; // 3 МБ ≈ 30–60 сек opus
 const feedbackThrottle = new Map<string, { n: number }>();
 /** Троттл /api/rewrite: 60 переформулировок в час на устройство (изолят-скоуп). */
 const rewriteThrottle = new Map<string, { at: number; n: number }>();
+/** Троттлы восстановления пароля: заявки 3/час, попытки ввода кода 5/час на устройство. */
+const resetReqThrottle = new Map<string, { at: number; n: number }>();
+const resetTryThrottle = new Map<string, { at: number; n: number }>();
 const FEEDBACK_DAILY_LIMIT = 30;
 const FEEDBACK_REASONS = ["wrong_paragraph", "no_quote", "off_topic", "outdated", "other"];
 
@@ -3334,6 +3418,84 @@ export default {
           200,
           cors
         );
+      }
+
+      // POST /api/auth/reset-request {email} — заявка на сброс: код на почту (Brevo → SendGrid).
+      // Ответ всегда нейтральный: существование аккаунта не раскрываем.
+      if (url.pathname === "/api/auth/reset-request" && req.method === "POST") {
+        const body = (await req.json().catch(() => ({}))) as any;
+        const email = String(body.email ?? "").trim();
+        if (!EMAIL_RE.test(email)) return json({ error: "bad_email", detail: "Проверьте email — выглядит опечаткой" }, 400, cors);
+        // троттлинг 3/час на устройство: спамить заявки бесполезно
+        const dev = req.headers.get("X-Device-Id") || "anon";
+        const nowMs = Date.now();
+        const tr = resetReqThrottle.get(dev);
+        if (!tr || nowMs - tr.at > 3600_000) resetReqThrottle.set(dev, { at: nowMs, n: 1 });
+        else if (tr.n >= 3) return json({ error: "reset_limit", detail: "Слишком много заявок — попробуйте через час" }, 429, cors);
+        else tr.n += 1;
+
+        if (!env.BREVO_API_KEY && !env.SENDGRID_API_KEY)
+          return json({ error: "mailer_not_configured", detail: "Восстановление по почте временно недоступно" }, 503, cors);
+
+        const user = await env.DB.prepare("SELECT id FROM users WHERE email=?").bind(email).first();
+        const archived = await env.DB.prepare("SELECT email FROM archived_users WHERE email=?").bind(email).first();
+        if (!user || archived)
+          return json({ ok: true, detail: "Если почта зарегистрирована, письмо с кодом отправлено" }, 200, cors);
+
+        const code = makeResetCode();
+        const expires = new Date(nowMs + 30 * 60_000).toISOString();
+        await ensureResetTable(env);
+        await purgeExpiredResets(env);
+        await env.DB.prepare(
+          "INSERT INTO password_resets (email, code_hash, expires_at, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(email) DO UPDATE SET code_hash=excluded.code_hash, expires_at=excluded.expires_at, created_at=excluded.created_at, used_at=NULL"
+        )
+          .bind(email, await hashPassword(code), expires, new Date().toISOString())
+          .run();
+        try {
+          await sendMail(
+            env,
+            email,
+            `${code} — код восстановления snippy.llm`,
+            `Код для сброса пароля: ${code}\n\nЖивёт 30 минут. Если это были не вы — просто игнорируйте письмо, пароль не изменится.`
+          );
+        } catch (e: any) {
+          if (e?.message === "mailer_not_configured")
+            return json({ error: "mailer_not_configured", detail: "Восстановление по почте временно недоступно" }, 503, cors);
+          console.error(`[reset] mailer failed: ${String(e?.message ?? e).slice(0, 160)}`);
+          return json({ error: "mailer_failed", detail: "Не удалось отправить письмо — попробуйте чуть позже" }, 502, cors);
+        }
+        return json({ ok: true, detail: "Если почта зарегистрирована, письмо с кодом отправлено" }, 200, cors);
+      }
+
+      // POST /api/auth/reset-confirm {email, code, password} — смена пароля по коду из письма
+      if (url.pathname === "/api/auth/reset-confirm" && req.method === "POST") {
+        const body = (await req.json().catch(() => ({}))) as any;
+        const email = String(body.email ?? "").trim();
+        const code = String(body.code ?? "").trim();
+        const password = String(body.password ?? "");
+        if (!EMAIL_RE.test(email) || password.length < 6)
+          return json({ error: "bad_input", detail: "Email и пароль (6+) обязательны" }, 400, cors);
+        // антибрутфорс: 5 попыток/час на устройство
+        const dev = req.headers.get("X-Device-Id") || "anon";
+        const nowMs = Date.now();
+        const tr = resetTryThrottle.get(dev);
+        if (!tr || nowMs - tr.at > 3600_000) resetTryThrottle.set(dev, { at: nowMs, n: 1 });
+        else if (tr.n >= 5) return json({ error: "reset_limit", detail: "Слишком много попыток — попробуйте через час" }, 429, cors);
+        else tr.n += 1;
+
+        const generic = { error: "bad_code", detail: "Неверный или просроченный код" };
+        await ensureResetTable(env);
+        await purgeExpiredResets(env);
+        const row = await env.DB.prepare("SELECT code_hash, expires_at, used_at FROM password_resets WHERE email=?").bind(email).first<{
+          code_hash: string; expires_at: string; used_at: string | null;
+        }>();
+        if (!row || row.used_at || row.expires_at < new Date().toISOString() || !/\d{6}/.test(code))
+          return json(generic, 400, cors);
+        if (!(await verifyPassword(code, row.code_hash))) return json(generic, 400, cors);
+        const upd = await env.DB.prepare("UPDATE users SET password_hash=? WHERE email=?").bind(await hashPassword(password), email).run();
+        if (!Number((upd as any)?.meta?.changes ?? 0)) return json(generic, 400, cors); // юзер удалён между делом
+        await env.DB.prepare("DELETE FROM password_resets WHERE email=?").bind(email).run();
+        return json({ ok: true, detail: "Пароль обновлён — войдите с новым паролем" }, 200, cors);
       }
 
       // GET /api/me — профиль: uid/email/имя/кулдаун смены/токены
@@ -4078,6 +4240,11 @@ export default {
                   { id: "zen", key_set: !!env.OPENCODE_API_KEY },
                   { id: "pollinations", key_set: true },
                 ],
+                mailer: {
+                  brevo: !!env.BREVO_API_KEY,
+                  sendgrid: !!env.SENDGRID_API_KEY,
+                  from: env.MAIL_FROM ?? "postalarchive@gmail.com",
+                },
                 embed_fallbacks: (["gemini", "jina", "voyage", "cohere", "mistral"] as const).map((id) => ({
                   id,
                   key_set:
