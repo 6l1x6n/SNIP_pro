@@ -14,7 +14,70 @@ import {
   FAST_COST, DEEP_COST, CATALOG,
   type CreditsState, type LedgerItem,
 } from '../utils/credits'
+import { authFetch, WORKER_BASE } from '../utils/api'
 
+
+
+/** Привязка Telegram: одноразовая ссылка-токен, привязка подтверждает /start в боте. */
+function TelegramLink() {
+  const { user } = useAuth()
+  const [linkedName, setLinkedName] = useState<string | null>(user?.tg_username ?? null)
+  const [busy, setBusy] = useState(false)
+  const [waiting, setWaiting] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  const refreshMe = async (): Promise<string | null> => {
+    const r = await authFetch(`${WORKER_BASE}/api/me`)
+    if (!r.ok) return null
+    const d = await r.json().catch(() => ({}))
+    return d?.telegram?.linked ? (d.telegram.username || 'привязан') : null
+  }
+
+  const link = async () => {
+    setErr(null); setBusy(true)
+    try {
+      const r = await authFetch(`${WORKER_BASE}/api/tg/link`)
+      const d = await r.json().catch(() => ({}))
+      if (!r.ok) { setErr(d.detail || d.error || 'Бот недоступен'); return }
+      window.open(d.url, '_blank', 'noopener')
+      // ждём привязку: бот пришлёт /start с токеном — раз в 3с опрашиваем профиль
+      setWaiting(true)
+      for (let i = 0; i < 40; i++) {
+        await new Promise((res) => setTimeout(res, 3000))
+        const name = await refreshMe()
+        if (name) { setLinkedName(name); setWaiting(false); return }
+      }
+      setWaiting(false)
+      setErr('Не дождались подтверждения. Попробуйте ещё раз — ссылка живёт 15 минут.')
+    } catch { setErr('Не удалось соединиться с сервером') } finally { setBusy(false) }
+  }
+
+  const unlink = async () => {
+    setBusy(true)
+    try { await authFetch(`${WORKER_BASE}/api/tg/unlink`, { method: 'POST' }); setLinkedName(null) }
+    catch { setErr('Не удалось отвязать') } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl p-4 border border-slate-200 dark:border-slate-700">
+      <div className="text-xs text-slate-500 dark:text-slate-400">Telegram</div>
+      {linkedName ? (
+        <>
+          <div className="font-medium text-slate-900 dark:text-white mt-1.5">{linkedName.startsWith('@') ? linkedName : `@${linkedName}`}</div>
+          <button onClick={unlink} disabled={busy} className="text-xs text-slate-400 hover:text-red-500 mt-2 underline">Отвязать</button>
+        </>
+      ) : (
+        <>
+          <div className="font-medium text-slate-900 dark:text-white mt-1.5">Не привязан</div>
+          <button onClick={link} disabled={busy || waiting} className="text-xs text-blue-600 dark:text-blue-400 hover:underline mt-2">
+            {waiting ? 'Ждём подтверждения в боте…' : busy ? 'Готовим ссылку…' : 'Привязать — коды восстановления будут приходить в бота'}
+          </button>
+        </>
+      )}
+      {err && <div className="text-xs text-red-600 dark:text-red-400 mt-2">{err}</div>}
+    </div>
+  )
+}
 
 function stringToColor(str: string) {
   let hash = 0
@@ -560,6 +623,7 @@ export function ProfilePage({ stats, docs, onLogout, highlightPalette, setHighli
                     <div className="text-xs text-slate-500 dark:text-slate-400">Имя</div>
                     <NameEditor />
                   </div>
+                  <TelegramLink />
                   <NormsStats stats={stats} docs={docs} />
                   <ActivityStats />
                 </div>

@@ -18,6 +18,10 @@ export interface Env {
   SENDGRID_API_KEY?: string;
   MAIL_FROM?: string; // дефолт postalarchive@gmail.com — тот, что верифицирован у провайдера
   MAIL_FROM_NAME?: string; // дефолт snippy.llm
+  // Telegram-бот: доставка кода сброса пароля (webhook-схема, без polling)
+  TG_BOT_TOKEN?: string;
+  TG_BOT_USERNAME?: string; // для глубокой ссылки t.me/<username>?start=<token>
+  TG_WEBHOOK_SECRET?: string; // секретный сегмент пути вебхука
   GROQ_MODEL: string;
   EMBED_MODEL: string;
   INDEX_BASE_URL: string; // https://snippy-llm.pages.dev/index
@@ -160,6 +164,55 @@ export async function sendMail(env: Env, to: string, subject: string, text: stri
   if (!env.BREVO_API_KEY && !env.SENDGRID_API_KEY)
     throw Object.assign(new Error("mailer_not_configured"), { status: 503 });
   throw Object.assign(new Error(`mailer failed: ${errors.join(", ")}`), { status: 502 });
+}
+
+// ---------- Telegram: привязка аккаунта через глубокую ссылку ----------
+
+/** tg_chat_id/tg_username у users — ленивая миграция (игнорирует duplicate column). */
+async function ensureUserTgColumns(env: Env): Promise<void> {
+  for (const sql of [
+    "ALTER TABLE users ADD COLUMN tg_chat_id TEXT",
+    "ALTER TABLE users ADD COLUMN tg_username TEXT",
+  ]) {
+    try {
+      await env.DB.prepare(sql).run();
+    } catch {
+      /* колонка уже есть — ок */
+    }
+  }
+}
+
+async function ensureTgLinkTokens(env: Env): Promise<void> {
+  try {
+    await env.DB.prepare(
+      "CREATE TABLE IF NOT EXISTS tg_link_tokens (token TEXT PRIMARY KEY, uid TEXT NOT NULL, created_at TEXT NOT NULL)"
+    ).run();
+  } catch {
+    /* уже есть — ок */
+  }
+}
+
+/** Просроченные токены привязки (15 мин) чистятся при касании. */
+export async function purgeExpiredTgTokens(env: Env): Promise<void> {
+  try {
+    await env.DB.prepare("DELETE FROM tg_link_tokens WHERE created_at < ?")
+      .bind(new Date(Date.now() - 15 * 60_000).toISOString())
+      .run();
+  } catch {
+    /* таблицы может не быть — ок */
+  }
+}
+
+/** Сообщение в Telegram. Бросает, если бот не настроен или Telegram отказал. */
+export async function tgSendMessage(env: Env, chatId: string, text: string): Promise<void> {
+  if (!env.TG_BOT_TOKEN) throw Object.assign(new Error("tg_not_configured"), { status: 503 });
+  const r = await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, text }),
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!r.ok) throw Object.assign(new Error(`tg send ${r.status}`), { status: 502 });
 }
 
 async function ensureResetTable(env: Env): Promise<void> {
@@ -3435,10 +3488,38 @@ export default {
         else if (tr.n >= 3) return json({ error: "reset_limit", detail: "Слишком много заявок — попробуйте через час" }, 429, cors);
         else tr.n += 1;
 
-        const user = await env.DB.prepare("SELECT id FROM users WHERE email=?").bind(email).first();
+        const user = await env.DB.prepare("SELECT id, tg_chat_id FROM users WHERE email=?").bind(email).first<{ id: string; tg_chat_id: string | null }>();
         const archived = await env.DB.prepare("SELECT email FROM archived_users WHERE email=?").bind(email).first();
         if (!user || archived)
           return json({ ok: true, detail: "Заявка принята — администратор рассмотрит её" }, 200, cors);
+
+        // Привязан Telegram → код летит в бота автоматически, без админа
+        if (user.tg_chat_id) {
+          const code = makeResetCode();
+          const expires = new Date(nowMs + 30 * 60_000).toISOString();
+          await ensureResetTable(env);
+          await purgeExpiredResets(env);
+          await env.DB.prepare(
+            "INSERT INTO password_resets (email, code_hash, expires_at, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(email) DO UPDATE SET code_hash=excluded.code_hash, expires_at=excluded.expires_at, created_at=excluded.created_at, used_at=NULL"
+          )
+            .bind(email, await hashPassword(code), expires, new Date().toISOString())
+            .run();
+          try {
+            await tgSendMessage(
+              env,
+              user.tg_chat_id,
+              `Код сброса пароля snippy.llm: ${code}\n\nЖивёт 30 минут. Если это были не вы — игнорируйте, пароль не изменится.`
+            );
+            return json(
+              { ok: true, detail: "Заявка принята. Если к аккаунту привязан Telegram, код уже в боте; иначе администратор выдаст код вручную." },
+              200,
+              cors
+            );
+          } catch (e: any) {
+            console.error(`[reset] tg send failed: ${String(e?.message ?? e).slice(0, 120)}`);
+            // TG не доставил — падаем в ручную заявку ниже
+          }
+        }
 
         // Заявка живёт 7 дней: за это время админ выдаёт код (код_hash='pending' до одобрения)
         await ensureResetTable(env);
@@ -3486,6 +3567,68 @@ export default {
         return json({ ok: true, detail: "Пароль обновлён — войдите с новым паролем" }, 200, cors);
       }
 
+      // GET /api/tg/link — одноразовая глубокая ссылка привязки Telegram (живёт 15 мин)
+      if (url.pathname === "/api/tg/link" && req.method === "GET") {
+        const auth = req.headers.get("Authorization");
+        if (!auth?.startsWith("Bearer ")) return json({ error: "unauthorized" }, 401, cors);
+        const { payload } = await verifyJwtWithReason(auth.slice(7), env.JWT_SECRET);
+        if (!payload?.uid) return json({ error: "unauthorized" }, 401, cors);
+        if (!env.TG_BOT_TOKEN || !env.TG_BOT_USERNAME)
+          return json({ error: "tg_not_configured", detail: "Telegram-бот ещё не подключён" }, 503, cors);
+        await ensureTgLinkTokens(env);
+        await purgeExpiredTgTokens(env);
+        const token = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join("");
+        await env.DB.prepare("INSERT INTO tg_link_tokens (token, uid, created_at) VALUES (?, ?, ?)")
+          .bind(token, String(payload.uid), new Date().toISOString())
+          .run();
+        return json({ url: `https://t.me/${env.TG_BOT_USERNAME}?start=${token}` }, 200, cors);
+      }
+
+      // POST /api/tg/unlink — отвязать свой Telegram
+      if (url.pathname === "/api/tg/unlink" && req.method === "POST") {
+        const auth = req.headers.get("Authorization");
+        if (!auth?.startsWith("Bearer ")) return json({ error: "unauthorized" }, 401, cors);
+        const { payload } = await verifyJwtWithReason(auth.slice(7), env.JWT_SECRET);
+        if (!payload?.uid) return json({ error: "unauthorized" }, 401, cors);
+        await ensureUserTgColumns(env);
+        await env.DB.prepare("UPDATE users SET tg_chat_id=NULL, tg_username=NULL WHERE id=?").bind(String(payload.uid)).run();
+        return json({ ok: true }, 200, cors);
+      }
+
+      // POST /api/tg/webhook/<secret> — апдейты Telegram: /start <token> привязывает аккаунт
+      if (url.pathname.startsWith("/api/tg/webhook/") && req.method === "POST") {
+        const seg = url.pathname.slice("/api/tg/webhook/".length);
+        if (!env.TG_WEBHOOK_SECRET || seg !== env.TG_WEBHOOK_SECRET) return json({ error: "not found" }, 404, cors);
+        const update = (await req.json().catch(() => ({}))) as any;
+        const msg = update?.message;
+        const chatId = msg?.chat?.id != null ? String(msg.chat.id) : null;
+        const fromUsername = msg?.from?.username ?? null;
+        const text = String(msg?.text ?? "");
+        const startPayload = text.startsWith("/start ") ? text.slice(7).trim() : "";
+        await ensureUserTgColumns(env);
+        await ensureTgLinkTokens(env);
+        await purgeExpiredTgTokens(env);
+        if (chatId && startPayload) {
+          const row = await env.DB.prepare("SELECT uid FROM tg_link_tokens WHERE token=?").bind(startPayload).first<{ uid: string }>();
+          if (row) {
+            await env.DB.batch([
+              env.DB.prepare("UPDATE users SET tg_chat_id=?, tg_username=? WHERE id=?").bind(chatId, fromUsername, row.uid),
+              env.DB.prepare("DELETE FROM tg_link_tokens WHERE token=?").bind(startPayload),
+            ]);
+            await tgSendMessage(env, chatId, "✅ Telegram привязан к вашему аккаунту snippy.llm. Теперь коды восстановления приходят сюда.").catch((e) =>
+              console.error(`[tg] confirm send failed: ${String(e?.message ?? e).slice(0, 120)}`)
+            );
+          }
+        } else if (chatId) {
+          await tgSendMessage(
+            env,
+            chatId,
+            "Это бот восстановления snippy.llm. Чтобы привязать аккаунт: зайдите на сайт → Профиль → «Привязать Telegram» — ссылка придёт сюда автоматически."
+          ).catch(() => {});
+        }
+        return json({ ok: true }, 200, cors);
+      }
+
       // GET /api/me — профиль: uid/email/имя/кулдаун смены/токены
       if (url.pathname === "/api/me" && req.method === "GET") {
         const auth = req.headers.get("Authorization");
@@ -3503,13 +3646,17 @@ export default {
         let full_name: string | null = null;
         let name_changed_at: string | null = null;
         let created_at: string | null = null;
+        let tg_chat_id: string | null = null;
+        let tg_username: string | null = null;
         try {
-          const urow = await env.DB.prepare("SELECT full_name,name_changed_at,created_at FROM users WHERE id=?")
+          const urow = await env.DB.prepare("SELECT full_name, name_changed_at, created_at, tg_chat_id, tg_username FROM users WHERE id=?")
             .bind(String(payload.uid))
-            .first<{ full_name: string | null; name_changed_at: string | null; created_at: string | null }>();
+            .first<{ full_name: string | null; name_changed_at: string | null; created_at: string | null; tg_chat_id: string | null; tg_username: string | null }>();
           full_name = urow?.full_name ?? null;
           name_changed_at = urow?.name_changed_at ?? null;
           created_at = urow?.created_at ?? null;
+          tg_chat_id = urow?.tg_chat_id ?? null;
+          tg_username = urow?.tg_username ?? null;
         } catch {
           /* старая схема — без имени */
         }
@@ -3527,6 +3674,10 @@ export default {
             created_at,
             is_admin: isAdminEmail(payload.email),
             credits,
+            telegram: {
+              linked: Boolean(tg_chat_id),
+              username: tg_username,
+            },
           },
           200,
           cors

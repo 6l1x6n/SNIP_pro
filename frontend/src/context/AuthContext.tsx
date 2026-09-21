@@ -9,6 +9,7 @@ type User = {
   name_can_change_at?: string | null
   created_at?: string | null
   is_admin?: boolean
+  tg_username?: string | null
   is_superuser: boolean
   is_active: boolean
   is_verified: boolean
@@ -146,6 +147,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser({
           id: d.uid, email: d.email, full_name: d.full_name ?? data.full_name ?? null,
           name_can_change_at: d.name_can_change_at ?? null, created_at: d.created_at ?? null,
+          tg_username: d.telegram?.username ?? null,
           is_admin: !!d.is_admin, is_superuser: !!d.is_admin, is_active: true, is_verified: true,
         })
         return
