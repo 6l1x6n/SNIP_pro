@@ -324,8 +324,8 @@ function ModeSelect({ mode, setMode }: {
     return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey) }
   }, [open ])
   const opts = [
-    { v: 'fast' as const, label: 'Быстрый', cost: FAST_COST, hint: '3 результата', title: `Быстрый поиск: 3 результата • ${FAST_COST} кредитов` },
-    { v: 'deep' as const, label: 'Глубокий', cost: DEEP_COST, hint: 'до 30 + цитата', title: `Глубокий поиск: до 30 результатов + ответ с цитатой • ${DEEP_COST} кредитов` },
+    { v: 'fast' as const, label: 'Быстрый', cost: FAST_COST, hint: '3 результата', title: `Быстрый поиск: 3 результата • ${FAST_COST} токенов` },
+    { v: 'deep' as const, label: 'Глубокий', cost: DEEP_COST, hint: 'до 30 + цитата', title: `Глубокий поиск: до 30 результатов + ответ с цитатой • ${DEEP_COST} токенов` },
   ]
   const cur = opts.find((o) => o.v === mode) ?? opts[0]
   return (
@@ -454,7 +454,7 @@ function FollowUpThread({ query, baseAnswer, chunkIds, onNeedCredits }: {
           maxLength={300}
           className="flex-1 min-w-0 rounded-xl border border-slate-200 dark:border-slate-700 px-3 py-2 max-md:py-2.5 max-md:text-base text-sm bg-white dark:bg-slate-900 dark:text-white placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-slate-900/15 focus:border-slate-900 dark:focus:ring-white/20 dark:focus:border-slate-300"
         />
-        <button type="submit" disabled={sending || !input.trim()} title={`Уточнение без нового поиска • ${FOLLOWUP_COST} кредитов`} className="btn btn-sm btn-primary py-2 max-md:py-2.5 shrink-0 max-md:w-full">
+        <button type="submit" disabled={sending || !input.trim()} title={`Уточнение без нового поиска • ${FOLLOWUP_COST} токенов`} className="btn btn-sm btn-primary py-2 max-md:py-2.5 shrink-0 max-md:w-full">
           {sending ? '…' : <><span>Уточнить</span><span className="inline-flex items-center gap-0.5 opacity-80"><Icon name="bolt" size={11} />{FOLLOWUP_COST}</span></>}
         </button>
       </form>
@@ -473,7 +473,7 @@ type SearchViewProps = {
   searchHistory: string[]
   clearHistory: () => void
   removeHistoryItem?: (item: string) => void
-  /** Восстановить сессию целиком бесплатно — кредиты не списываются (если слепка нет — вставить текст). */
+  /** Восстановить сессию целиком бесплатно — токены не списываются (если слепка нет — вставить текст). */
   onPickSession?: (q: string) => void
   pins?: string[]
   showHistory: boolean
@@ -576,7 +576,7 @@ export function SearchView(props: SearchViewProps) {
   const orderedAnswerCards = valuesAsc
     ? [...answerCards].sort((a, b) => valueBase(a.fact) - valueBase(b.fact))
     : answerCards
-  // Locked-тизер: нет кредитов — показываем 1 карточку + 3 результата в блюре,
+  // Locked-тизер: нет токенов — показываем 1 карточку + 3 результата в блюре,
   // всё некликабельно, CTA — баннер сверху. Общая логика для fast/deep.
   const locked = !!insufficientCredits && !!resp && !loading
   const goLockedCta = () => {
@@ -646,7 +646,7 @@ export function SearchView(props: SearchViewProps) {
                     title={<span className="text-sm font-normal text-slate-700 dark:text-slate-200">{h}</span>}
                     titleAttr={h}
                     onOpen={() => { if (onPickSession) onPickSession(h); else { setQuery(h); setShowHistory(false); setTimeout(() => searchInputRef?.current?.focus(), 0) } }}
-                    titleOpenLabel={`Открыть «${h}» бесплатно — кредиты не спишутся`}
+                    titleOpenLabel={`Открыть «${h}» бесплатно — токены не спишутся`}
                     trail={
                       <button
                         type="button"
@@ -724,7 +724,7 @@ export function SearchView(props: SearchViewProps) {
         {!user && !loading && !resp && !insufficientCredits && (
           <div className="text-center py-2 mb-2">
             <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 text-xs">
-              Гостям — 30 кредитов в день. <button onClick={() => { setAuthMode('register'); setShowAuth(true) }} className="underline font-medium">Зарегистрируйтесь</button> — 300 каждый час + накопительный баланс
+              Гостям — 30 токенов в час. <button onClick={() => { setAuthMode('register'); setShowAuth(true) }} className="underline font-medium">Зарегистрируйтесь</button> — 300 токенов каждый час + накопительный баланс
             </div>
           </div>
         )}
@@ -734,16 +734,25 @@ export function SearchView(props: SearchViewProps) {
         {insufficientCredits && (
           <div className="rounded-2xl border border-amber-200 dark:border-amber-900 bg-amber-50/70 dark:bg-amber-950/20 p-6 text-center animate-[slideUp_.2s_ease-out] mb-5 max-md:mb-3">
             <div className="w-12 h-12 mx-auto rounded-full bg-amber-100 dark:bg-amber-900/50 text-amber-600 dark:text-amber-300 flex items-center justify-center mb-3"><Icon name="bolt" size={22} /></div>
-            <div className="font-semibold text-slate-900 dark:text-white text-lg">Недостаточно кредитов</div>
-            <div className="text-sm text-slate-600 dark:text-slate-300 mt-2 max-w-md mx-auto">
-              Зарегистрируйтесь и получайте бесплатные кредиты.
-            </div>
-            <div className="mt-4 flex items-center justify-center gap-3 flex-wrap max-md:flex-col max-md:items-stretch">
-              <button onClick={() => { if (onTopUp) onTopUp() }} className="btn btn-md btn-primary px-6 py-2.5 max-md:w-full">Пополнить баланс</button>
-              {!user && (
-                <button onClick={() => { setAuthMode('register'); setShowAuth(true) }} className="btn btn-md btn-secondary px-6 py-2.5 max-md:w-full">Регистрация (бесплатные кредиты)</button>
-              )}
-            </div>
+            {!user ? (
+              <>
+                <div className="font-semibold text-slate-900 dark:text-white text-lg">Токены этого часа закончились</div>
+                <div className="text-sm text-slate-600 dark:text-slate-300 mt-2 max-w-md mx-auto">
+                  Через час обновятся сами. А после регистрации — 300 токенов каждый час и накопительный баланс.
+                </div>
+                <div className="mt-4 flex items-center justify-center gap-3 flex-wrap max-md:flex-col max-md:items-stretch">
+                  <button onClick={() => { setAuthMode('register'); setShowAuth(true) }} className="btn btn-md btn-primary px-6 py-2.5 max-md:w-full">Регистрация — бесплатно</button>
+                  <button onClick={() => { setAuthMode('login'); setShowAuth(true) }} className="btn btn-md btn-ghost px-6 py-2.5 max-md:w-full text-slate-500">Уже с нами — войти</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="font-semibold text-slate-900 dark:text-white text-lg">Недостаточно токенов</div>
+                <div className="mt-4 flex items-center justify-center gap-3 flex-wrap max-md:flex-col max-md:items-stretch">
+                  <button onClick={() => { if (onTopUp) onTopUp() }} className="btn btn-md btn-primary px-6 py-2.5 max-md:w-full">Пополнить баланс</button>
+                </div>
+              </>
+            )}
           </div>
         )}
 
@@ -891,7 +900,7 @@ export function SearchView(props: SearchViewProps) {
                   />
                 </div>
                 {locked && (
-                  <button type="button" onClick={goLockedCta} aria-label="Зарегистрируйтесь и получайте бесплатные кредиты" className="absolute inset-0 w-full h-full cursor-pointer bg-transparent" />
+                  <button type="button" onClick={goLockedCta} aria-label="Зарегистрируйтесь и получайте бесплатные токены" className="absolute inset-0 w-full h-full cursor-pointer bg-transparent" />
                 )}
               </div>
               )
@@ -1152,7 +1161,7 @@ export function SearchView(props: SearchViewProps) {
                   })}
                   </div>
                   {locked && (
-                    <button type="button" onClick={goLockedCta} aria-label="Зарегистрируйтесь и получайте бесплатные кредиты" className="absolute inset-0 w-full h-full cursor-pointer bg-transparent" />
+                    <button type="button" onClick={goLockedCta} aria-label="Зарегистрируйтесь и получайте бесплатные токены" className="absolute inset-0 w-full h-full cursor-pointer bg-transparent" />
                   )}
                 </div>
               )

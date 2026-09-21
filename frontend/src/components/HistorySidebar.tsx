@@ -70,11 +70,11 @@ export function HistorySidebar({
         titleAttr={h}
         subtitle={
           saved ? (
-            <span className="text-emerald-600/80 dark:text-emerald-400/80">бесплатно • кредиты целы</span>
+            <span className="text-emerald-600/80 dark:text-emerald-400/80">бесплатно • токены целы</span>
           ) : undefined
         }
         onOpen={() => onPick(h)}
-        titleOpenLabel={saved ? `Открыть сессию «${h}» бесплатно — кредиты не спишутся` : `Вставить «${h}» в поиск`}
+        titleOpenLabel={saved ? `Открыть сессию «${h}» бесплатно — токены не спишутся` : `Вставить «${h}» в поиск`}
         trail={
           <span className="inline-flex items-center">
             <button
@@ -153,7 +153,7 @@ export function HistorySidebar({
                 Сессии появятся здесь
               </div>
               <div className="text-[11px] text-slate-400 mt-1 leading-relaxed">
-                Повторное открытие — бесплатно, кредиты не списываются
+                Повторное открытие — бесплатно, токены не списываются
               </div>
             </div>
           )}

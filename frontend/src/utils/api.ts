@@ -2,7 +2,7 @@
  * Shared API configuration, device ID, and authFetch wrapper.
  */
 
-// CF Worker: auth + кредиты + /ask + /embed
+// CF Worker: auth + токены + /ask + /embed
 export const WORKER_BASE = import.meta.env.VITE_WORKER_BASE || import.meta.env.VITE_API_BASE || ''
 export const API_BASE = WORKER_BASE
 

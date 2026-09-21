@@ -1,5 +1,5 @@
 // FeedbackBar — минималистичный фидбек под главным ИИ-ответом: 👍/👎 + причина + коммент.
-// Без списания кредитов. Повторный голос блокируется через localStorage.
+// Без списания токенов. Повторный голос блокируется через localStorage.
 
 import { useState } from 'react'
 import { WORKER_BASE, authFetch } from '../utils/api'

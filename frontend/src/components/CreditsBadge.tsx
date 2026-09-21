@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext'
 import { Icon } from './Icon'
 
 /**
- * Бейдж кредитов в хедере: доступно = остаток дневного лимита + накопительный баланс.
+ * Бейдж токенов в хедере: доступно = остаток дневного лимита + накопительный баланс.
  * Обновляется после поисков/покупок (событие snip:credits), при входе/выходе.
  * Клик открывает страницу «Использование».
  */
@@ -36,7 +36,7 @@ export function CreditsBadge({ onOpenUsage }: { onOpenUsage?: () => void }) {
   // Сервис недоступен — заглушка вместо бейджа
   if (failed) {
     return (
-      <button onClick={onOpenUsage} title="Кредиты: сервис временно недоступен" className={`${shell} opacity-70 hover:opacity-100 cursor-pointer`}>
+      <button onClick={onOpenUsage} title="Токены: сервис временно недоступен" className={`${shell} opacity-70 hover:opacity-100 cursor-pointer`}>
         <Icon name="bolt" size={14} className="text-slate-400" />
         <span className="text-xs font-semibold text-slate-400">—</span>
       </button>
@@ -58,7 +58,7 @@ export function CreditsBadge({ onOpenUsage }: { onOpenUsage?: () => void }) {
   return (
     <button
       onClick={onOpenUsage}
-      title={`Доступно: ${total} кредитов\n• Дневной лимит: ${state.daily.remaining} из ${state.daily.limit}\n• Накопительный баланс: ${state.balance}${state.plan ? `\n• План: ${state.plan}` : ''}\nНажмите, чтобы открыть «Использование»`}
+      title={`Доступно: ${total} токенов\n• Часовой лимит: ${state.daily.remaining} из ${state.daily.limit}\n• Накопительный баланс: ${state.balance}${state.plan ? `\n• План: ${state.plan}` : ''}\nНажмите, чтобы открыть «Использование»`}
       className={`${shell} hover:border-slate-400 dark:hover:border-slate-500 cursor-pointer text-left`}
     >
       <Icon name="bolt" size={14} className={low ? 'text-amber-500' : 'text-slate-400 dark:text-slate-500'} />

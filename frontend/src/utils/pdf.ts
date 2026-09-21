@@ -40,7 +40,7 @@ async function exists(url: string): Promise<boolean> {
   }
 }
 
-/** Статика Pages сначала (бесплатно, без расхода кредитов воркера); R2 через воркер — только фолбэк. */
+/** Статика Pages сначала (бесплатно, без расхода токенов воркера); R2 через воркер — только фолбэк. */
 export async function resolvePdfUrl(file: string): Promise<string> {
   if (!/\.pdf$/i.test(file)) {
     throw new Error(`«${file}» — не PDF, доступен только текст в поиске`)

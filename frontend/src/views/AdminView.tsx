@@ -45,7 +45,7 @@ function kindLabel(kind: string, meta?: string | null): string {
     if (meta && JSON.parse(meta)?.freeze) return 'Заморозка (админ)'
   } catch {}
   if (KIND_LABELS[kind]) return KIND_LABELS[kind]
-  if (kind.startsWith('refund')) return 'Возврат кредитов'
+  if (kind.startsWith('refund')) return 'Возврат токенов'
   return kind
 }
 
@@ -268,7 +268,7 @@ export function AdminView({ user }: { user: any }) {
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                 <Card title="Пользователей" value={String(stats.users.total)} sub={`+${stats.users.fresh} за период`} />
                 <Card title="Активность/день (макс)" value={String(Math.max(0, ...(stats.usage_by_day || []).map((x: any) => x.n)) || '—')} sub="уникальных субъектов" />
-                <Card title="Потрачено за период" value={String((stats.usage_by_day || []).reduce((s: number, x: any) => s + x.s, 0))} sub="кредитов • дневные лимиты" />
+                <Card title="Потрачено за период" value={String((stats.usage_by_day || []).reduce((s: number, x: any) => s + x.s, 0))} sub="токенов • дневные лимиты" />
                 <Card title="Объяснения" value={`${stats.explain.used}/${stats.explain.cap * days}`} sub={`кэш: ${stats.explain.cached}`} />
               </div>
               <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
@@ -557,7 +557,7 @@ export function AdminView({ user }: { user: any }) {
                         <span className="ml-auto tabular-nums text-slate-500">{Number(p.price).toLocaleString('ru-RU')}₸ • {p.dailyLimit}/день • {p.days} дн.</span>
                       </div>
                     ))}
-                    <div className="text-[11px] text-slate-400 mt-3 mb-1 tracking-widest uppercase">Пакеты кредитов</div>
+                    <div className="text-[11px] text-slate-400 mt-3 mb-1 tracking-widest uppercase">Пакеты токенов</div>
                     {Object.entries(health.billing.packs || {}).map(([sku, p]: any) => (
                       <div key={sku} className="flex text-xs py-1 border-b border-slate-100 dark:border-slate-800 last:border-0">
                         <span className="font-mono text-slate-500">{sku}</span>

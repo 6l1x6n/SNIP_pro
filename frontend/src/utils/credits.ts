@@ -1,5 +1,5 @@
 /**
- * credits.ts — типы и клиент кредитной системы (гибрид: дневной лимит + накопительный баланс).
+ * credits.ts — типы и клиент системы токенов (гибрид: часовой лимит + накопительный баланс).
  * Списание: сначала бесплатные дневные, затем купленный баланс.
  */
 import { WORKER_BASE, authFetch, DEVICE_ID } from './api'
@@ -37,7 +37,7 @@ function creditsKey(): string {
   }
 }
 
-/** Сбросить кэш кредитов: вызывать при входе/выходе/смене пользователя. */
+/** Сбросить кэш токенов: вызывать при входе/выходе/смене пользователя. */
 export function invalidateCreditsCache(): void {
   creditsCache = null
   creditsInflight = null
@@ -75,12 +75,12 @@ export async function fetchCredits(force = false): Promise<CreditsState | null> 
 export class InsufficientCreditsError extends Error {
   need: number
   constructor(need: number) {
-    super('Недостаточно кредитов')
+    super('Недостаточно токенов')
     this.need = need
   }
 }
 
-/** Списать кредиты за поиск (fast списывается upfront, deep — внутри /ask). */
+/** Списать токены за поиск (fast списывается upfront, deep — внутри /ask). */
 export async function spendForSearch(mode: 'fast' | 'deep'): Promise<CreditsState> {
   const r = await authFetch(`${WORKER_BASE}/api/credits/spend`, {
     method: 'POST',
@@ -145,17 +145,17 @@ export async function purchaseDemo(sku: string): Promise<{ ok: boolean; detail?:
   return { ok: true }
 }
 
-/** Диспетчер обновления бейджа кредитов (после /ask, spend, purchase или вручную). */
+/** Диспетчер обновления бейджа токенов (после /ask, spend, purchase или вручную). */
 export function dispatchCredits(state?: CreditsState | null): void {
   if (state?.daily) creditsCache = { at: Date.now(), state, key: creditsKey() }
   window.dispatchEvent(new CustomEvent('snip:credits', { detail: state }))
 }
 
-/** Подпись периода обновления лимита: акция для юзеров — каждый час, гости — раз в сутки. */
+/** Подпись периода обновления лимита: у всех почасовой (гости 30, зарегистрированные 300). */
 export function resetLabel(c: CreditsState | null, isUser: boolean): string {
-  if (c?.reset === 'hourly' || (isUser && !c)) return 'Обновляется каждый час (акция: 300⚡/час)'
-  if (c?.reset === 'daily' || !isUser) return 'Обновляется каждый день в 00:00 UTC'
-  return isUser ? 'Обновляется каждый час (акция: 300⚡/час)' : 'Обновляется каждый день в 00:00 UTC'
+  void c
+  void isUser
+  return 'Обновляется каждый час'
 }
 
 /** Смена отображаемого имени (кулдаун 30 дней на сервере, первая установка свободна). */

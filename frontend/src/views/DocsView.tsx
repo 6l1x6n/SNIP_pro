@@ -163,7 +163,7 @@ export function DocsView({ docs, docsLoading, filterStatus, setFilterStatus, loa
                 <div className="w-12 h-12 mx-auto rounded-full bg-slate-900 dark:bg-slate-800 text-white flex items-center justify-center"><Icon name="lock" size={20} /></div>
                 <div className="font-semibold text-slate-900 dark:text-white mt-3">Для просмотра войдите</div>
                 <p className="text-xs text-slate-500 dark:text-slate-400 mt-1.5 leading-relaxed">
-                  Раздел «Документы» и PDF доступны после входа. Это бесплатно — зарегистрированные получают 300 кредитов каждый час по акции.
+                  Раздел «Документы» и PDF доступны после входа. Это бесплатно — зарегистрированные получают 300 токенов каждый час по акции.
                 </p>
                 <button onClick={onLogin} className="btn btn-md btn-primary mt-4 px-6 py-2.5">Войти / Создать аккаунт</button>
               </div>

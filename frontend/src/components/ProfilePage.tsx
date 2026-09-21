@@ -53,11 +53,11 @@ const KIND_LABELS: Record<string, string> = {
 }
 function kindLabel(kind: string): string {
   if (KIND_LABELS[kind]) return KIND_LABELS[kind]
-  if (kind.startsWith('refund')) return 'Возврат кредитов'
+  if (kind.startsWith('refund')) return 'Возврат токенов'
   return kind
 }
 
-/** Страница «Оплата»: подписки (дневной лимит) + разовые пакеты кредитов. Демо-активация — только админам. */
+/** Страница «Оплата»: подписки (часовой лимит) + разовые пакеты токенов. Демо-активация — только админам. */
 export function BillingSection() {
   const { user } = useAuth()
   const isAdmin = isAdminEmail(user?.email)
@@ -78,7 +78,7 @@ export function BillingSection() {
     setNotice(null)
     const res = await purchaseDemo(sku)
     if (res.ok) {
-      setNotice({ ok: true, text: sku === 'free' ? '«Free» активирован (демо). Подписка отменена.' : `«${label}» активирован (демо). Кредиты зачислены.` })
+      setNotice({ ok: true, text: sku === 'free' ? '«Free» активирован (демо). Подписка отменена.' : `«${label}» активирован (демо). Токены зачислены.` })
       const s = await fetchCredits()
       setCredits(s)
     } else {
@@ -104,7 +104,7 @@ export function BillingSection() {
         <div className="mt-3 p-3 rounded-xl bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-900 text-xs text-indigo-800 dark:text-indigo-300 flex items-start gap-2">
           <Icon name="lightbulb" size={14} className="mt-0.5 shrink-0" />
           <div>
-            <b>Как работает квота.</b> Каждый час зарегистрированным начисляется <b>300 кредитов</b> — неизрасходованный остаток сгорает в начале следующего часа. Списание идёт сначала с часового лимита, затем с накопительного баланса (пакеты на балансе не сгорают).
+            <b>Как работает квота.</b> Каждый час зарегистрированным начисляется <b>300 токенов</b> — неизрасходованный остаток сгорает в начале следующего часа. Списание идёт сначала с часового лимита, затем с накопительного баланса (пакеты на балансе не сгорают).
             {credits && <> Доступно сейчас: <b>{credits.daily.remaining}</b> {credits.reset === 'hourly' ? 'в этом часе' : 'сегодня'} + <b>{credits.balance}</b> на балансе.</>}
           </div>
         </div>
@@ -159,7 +159,7 @@ export function BillingSection() {
         </div>
 
         {/* Пакеты */}
-        <div className="mt-6 text-xs font-semibold text-slate-500 dark:text-slate-400 tracking-widest uppercase">Пакеты кредитов — на баланс, не сгорают</div>
+        <div className="mt-6 text-xs font-semibold text-slate-500 dark:text-slate-400 tracking-widest uppercase">Пакеты токенов — на баланс, не сгорают</div>
         <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
           {CATALOG.packs.map(pk => (
             <div key={pk.sku} className="rounded-2xl border border-slate-200 dark:border-slate-700 p-5 max-md:p-4 bg-white dark:bg-slate-900 flex flex-col hover:border-slate-300 dark:hover:border-slate-600 transition">
@@ -167,7 +167,7 @@ export function BillingSection() {
               <div className="relative mt-1">
                 <div className="beta-blur" aria-hidden>
                   <div className="text-2xl font-bold text-slate-900 dark:text-white inline-flex items-center gap-1">{fmt(pk.credits)}<Icon name="bolt" size={16} className="text-slate-400 dark:text-slate-500" /></div>
-                  <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{fmt(pk.price)} ₸ • ≈{Math.round(pk.price / pk.credits)} ₸ за кредит</div>
+                  <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{fmt(pk.price)} ₸ • ≈{Math.round(pk.price / pk.credits)} ₸ за токен</div>
                 </div>
                 <span className="absolute inset-0 flex items-center justify-center">
                   <span className="badge bg-white dark:bg-slate-900 shadow-sm text-xs px-3 py-1.5">Скоро</span>
@@ -186,7 +186,7 @@ export function BillingSection() {
         </div>
 
         <div className="mt-5 text-[11px] text-slate-400 leading-relaxed">
-          Списание: сначала бесплатный часовой лимит (300 кредитов каждый час для зарегистрированных), затем накопительный баланс. Быстрый поиск — {FAST_COST} кредитов, глубокий — {DEEP_COST}.
+          Списание: сначала бесплатный часовой лимит (300 токенов каждый час для зарегистрированных), затем накопительный баланс. Быстрый поиск — {FAST_COST} токенов, глубокий — {DEEP_COST}.
           Оплата будет добавлена после бета-тестирования.
         </div>
       </div>
@@ -217,12 +217,11 @@ export function CreditsPanel({ onTopUp }: { onTopUp?: () => void }) {
   if (loading && !state) return <div className="text-sm text-slate-500 dark:text-slate-400 p-4">Загружаем баланс…</div>
   if (!state) return (
     <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-sm text-amber-800">
-      Не удалось загрузить баланс — сервис кредитов временно недоступен.
+      Не удалось загрузить баланс — сервис токенов временно недоступен.
       <button onClick={refresh} className="ml-2 underline">Повторить</button>
     </div>
   )
 
-  const isHourly = state.reset === 'hourly' || (!!user && state.daily.limit >= 300)
   const topUpLocked = !!user && !isAdmin
 
   return (
@@ -230,7 +229,7 @@ export function CreditsPanel({ onTopUp }: { onTopUp?: () => void }) {
       {/* Баланс */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
-          <div className="text-xs text-blue-700 font-medium">{isHourly ? 'Почасовой лимит — акция (бесплатно)' : 'Дневной лимит (бесплатно)'}</div>
+          <div className="text-xs text-blue-700 font-medium">{state.reset === 'daily' ? 'Дневной лимит (бесплатно)' : 'Часовой лимит (бесплатно)'}</div>
           <div className="text-2xl font-bold text-slate-900 dark:text-white mt-1">{state.daily.remaining}<span className="text-sm text-slate-500 dark:text-slate-400 font-normal"> / {state.daily.limit}</span></div>
           <div className="mt-2 h-1.5 rounded-full bg-white dark:bg-slate-900 overflow-hidden"><div className="h-full rounded-full bg-slate-900 dark:bg-white transition-all" style={{ width: `${pct}%` }} /></div>
           <div className="text-[11px] text-blue-600 mt-1.5">{resetLabel(state, !!user)}{state.plan && state.plan !== 'free' ? ` • план повышает лимит` : ''}</div>
@@ -238,7 +237,7 @@ export function CreditsPanel({ onTopUp }: { onTopUp?: () => void }) {
         <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
           <div className="text-xs text-emerald-700 font-medium">Накопительный баланс</div>
           <div className="text-2xl font-bold text-slate-900 dark:text-white mt-1 inline-flex items-center gap-1">{state.balance}<Icon name="bolt" size={16} className="text-emerald-500" /></div>
-          <div className="text-[11px] text-emerald-700 mt-3">Пакеты кредитов — не сгорают</div>
+          <div className="text-[11px] text-emerald-700 mt-3">Пакеты токенов — не сгорают</div>
         </div>
         <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 p-4">
           <div className="text-xs text-slate-500 dark:text-slate-400 font-medium">Тариф</div>
@@ -448,10 +447,10 @@ function ActivityStats() {
     <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl p-4 border border-slate-200 dark:border-slate-700 md:col-span-2">
       <div className="text-xs text-slate-500 dark:text-slate-400">Ваша статистика</div>
       <div className="font-medium text-slate-900 dark:text-white mt-1.5">
-        Акция: 300 кредитов каждый час{spent != null && spent > 0 ? ` • потрачено ${spent}` : ''}{ops != null && ops > 0 ? ` • операций: ${ops}` : ''}
+        Акция: 300 токенов каждый час{spent != null && spent > 0 ? ` • потрачено ${spent}` : ''}{ops != null && ops > 0 ? ` • операций: ${ops}` : ''}
       </div>
       <div className="text-[11px] text-slate-400 mt-1">
-        Быстрый поиск — {FAST_COST} кредитов • глубокий — {DEEP_COST}{since ? ` • с нами с ${since}` : ''}
+        Быстрый поиск — {FAST_COST} токенов • глубокий — {DEEP_COST}{since ? ` • с нами с ${since}` : ''}
       </div>
     </div>
   )
@@ -572,7 +571,7 @@ export function ProfilePage({ stats, docs, onLogout, highlightPalette, setHighli
           <div className="space-y-4">
             <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 p-6 max-md:p-4">
               <h3 className="font-semibold text-slate-900 dark:text-white">Использование</h3>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Баланс кредитов и история операций • акция 300 кредитов в час</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Баланс токенов и история операций • акция 300 токенов в час</p>
               <div className="mt-4">
                 <CreditsPanel onTopUp={() => setSection('billing')} />
               </div>
@@ -588,11 +587,11 @@ export function ProfilePage({ stats, docs, onLogout, highlightPalette, setHighli
 
               <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
                 <div className="rounded-xl border border-blue-200 dark:border-blue-900 bg-blue-50 dark:bg-blue-950/30 p-4">
-                  <div className="font-semibold text-blue-800 dark:text-blue-300 flex items-center gap-1.5"><Icon name="bolt" size={13} /> Быстрый поиск — {FAST_COST} кредитов</div>
+                  <div className="font-semibold text-blue-800 dark:text-blue-300 flex items-center gap-1.5"><Icon name="bolt" size={13} /> Быстрый поиск — {FAST_COST} токенов</div>
                   <div className="text-blue-700 dark:text-blue-400 mt-1 leading-relaxed">Мгновенно находит 3 самых релевантных фрагмента нормы прямо в браузере — когда нужно быстро проверить цифру.</div>
                 </div>
                 <div className="rounded-xl border border-indigo-200 dark:border-indigo-900 bg-indigo-50 dark:bg-indigo-950/30 p-4">
-                  <div className="font-semibold text-indigo-800 dark:text-indigo-300 flex items-center gap-1.5"><Icon name="lightbulb" size={13} /> Глубокий поиск — {DEEP_COST} кредитов</div>
+                  <div className="font-semibold text-indigo-800 dark:text-indigo-300 flex items-center gap-1.5"><Icon name="lightbulb" size={13} /> Глубокий поиск — {DEEP_COST} токенов</div>
                   <div className="text-indigo-700 dark:text-indigo-400 mt-1 leading-relaxed" title="Ответ только при найденной норме; без источника — честно говорит «не найдено»">До 30 результатов плюс ответ с дословной цитатой, пунктом и страницей. Принцип: нет источника → нет утверждения.</div>
                 </div>
               </div>
@@ -610,8 +609,8 @@ export function ProfilePage({ stats, docs, onLogout, highlightPalette, setHighli
               </div>
 
               <div className="mt-4 rounded-xl border border-slate-200 dark:border-slate-700 p-4 text-xs leading-relaxed text-slate-600 dark:text-slate-300">
-                <div className="font-semibold text-slate-700 dark:text-slate-200 mb-1">Кредиты и подписка</div>
-                Акция: 30 кредитов в день у гостей (сброс в 00:00 UTC), 300 каждый час у зарегистрированных. Пакеты кредитов не сгорают, подписки Pro и Business повышают лимит и открывают объяснятор фрагментов в PDF.
+                <div className="font-semibold text-slate-700 dark:text-slate-200 mb-1">Токены и подписка</div>
+                Гостям — 30 токенов каждый час, зарегистрированным — 300. Пакеты токенов не сгорают, подписки Pro и Business повышают лимит и открывают объяснятор фрагментов в PDF.
                 <button onClick={() => setSection('billing')} className="btn btn-sm bg-slate-900 dark:bg-white text-white dark:text-slate-900 hover:bg-slate-700 dark:hover:bg-slate-200 mt-2">Тарифы и пакеты <Icon name="arrowRight" size={12} /></button>
               </div>
 
@@ -646,7 +645,7 @@ export function ProfilePage({ stats, docs, onLogout, highlightPalette, setHighli
 
             <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 p-5 max-md:p-4">
               <h3 className="font-semibold text-slate-900 dark:text-white">Режим поиска</h3>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Смысловой режим находит требования по смыслу, а не только по буквам: «перила» найдёт «элементы ограждения». Без доплат — те же кредиты, что обычно.</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Смысловой режим находит требования по смыслу, а не только по буквам: «перила» найдёт «элементы ограждения». Без доплат — те же токены, что обычно.</p>
               <SemanticToggle />
             </div>
 
@@ -681,8 +680,8 @@ export function ProfilePage({ stats, docs, onLogout, highlightPalette, setHighli
             </div>
 
             <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 p-5 max-md:p-4">
-              <h3 className="font-semibold text-slate-900 dark:text-white">Кредиты</h3>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Быстрый поиск — {FAST_COST} кредитов (3 результата). Глубокий — {DEEP_COST} (до 30 результатов + ответ с цитатой). Сначала тратится бесплатный лимит, затем накопительный баланс.</p>
+              <h3 className="font-semibold text-slate-900 dark:text-white">Токены</h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Быстрый поиск — {FAST_COST} токенов (3 результата). Глубокий — {DEEP_COST} (до 30 результатов + ответ с цитатой). Сначала тратится бесплатный лимит, затем накопительный баланс.</p>
               <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
                 <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60"><div className="text-slate-500 dark:text-slate-400">Гость</div><div className="font-semibold text-slate-900 dark:text-white mt-0.5">30 / день</div></div>
                 <div className="p-3 rounded-xl border border-blue-200 dark:border-blue-900 bg-blue-50 dark:bg-blue-950/30"><div className="text-blue-700 dark:text-blue-300">Зарегистрирован</div><div className="font-semibold text-blue-900 dark:text-blue-200 mt-0.5">300 / час + баланс</div></div>

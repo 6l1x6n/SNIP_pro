@@ -88,7 +88,7 @@ async function fetchEmbedOnce(q: string, mode?: 'fast' | 'deep', signal?: AbortS
   // обновляем бейдж даже из ошибок, иначе цифра врёт до истечения TTL.
   if (d?.credits?.daily) dispatchCredits(d.credits as CreditsState)
   if (r.status === 402) {
-    throw Object.assign(new Error(d.detail || 'Недостаточно кредитов'), { insufficientCredits: true, need: Number(d?.need) || 0 })
+    throw Object.assign(new Error(d.detail || 'Недостаточно токенов'), { insufficientCredits: true, need: Number(d?.need) || 0 })
   }
   if (r.status === 429) {
     const retryAfterMs = parseRetryAfterMs(r.headers.get('Retry-After'), d)
@@ -278,14 +278,14 @@ export async function hybridSearchLegacy(
   return { results, took_ms: res.tookMs, weak: res.weak, degraded: res.degraded, degradedReason: res.degradedReason }
 }
 
-// ---------- BM25-only fallback без сети и квот (deep без кредитов = 3 как fast) ----------
+// ---------- BM25-only fallback без сети и квот (deep без токенов = 3 как fast) ----------
 
 export async function hybridSearchBm25Only(
   query: string,
   topK = 3,
 ): Promise<{ results: LegacySearchResult[]; took_ms: number; weak: boolean; degraded?: boolean; degradedReason?: string }> {
   // embed бросает мгновенно без fetch: engine деградирует до локального BM25,
-  // провайдерские квоты (embed/rewrite/LLM) и кредиты не тратятся вообще.
+  // провайдерские квоты (embed/rewrite/LLM) и токены не тратятся вообще.
   const res: EngineResult = await search(query, {
     mode: 'fast',
     topK,
@@ -328,7 +328,7 @@ export async function askAI(query: string, mode: 'fast' | 'deep', chunkIds: stri
   if (r.status === 402) {
     const b = await r.json().catch(() => ({} as any))
     if (b?.credits?.daily) dispatchCredits(b.credits as CreditsState)
-    throw Object.assign(new Error(b.detail || 'Недостаточно кредитов'), {
+    throw Object.assign(new Error(b.detail || 'Недостаточно токенов'), {
       insufficientCredits: true,
       need: Number(b?.need) || 0,
     })
@@ -386,7 +386,7 @@ export async function askFollowUp(
   if (r.status === 402) {
     const b = await r.json().catch(() => ({} as any))
     if (b?.credits?.daily) dispatchCredits(b.credits as CreditsState)
-    throw Object.assign(new Error(b.detail || 'Недостаточно кредитов'), {
+    throw Object.assign(new Error(b.detail || 'Недостаточно токенов'), {
       insufficientCredits: true,
       need: Number(b?.need) || 0,
     })

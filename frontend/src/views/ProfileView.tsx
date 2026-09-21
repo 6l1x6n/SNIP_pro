@@ -26,19 +26,19 @@ function GuestCreditsView({ section, onAuthRequired }: { section: string; onAuth
             <h3 className="font-semibold text-slate-900 dark:text-white">Оплата</h3>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Пакеты и подписки snippy.llm</p>
             <div className="mt-3 p-3 rounded-xl bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900 text-sm text-blue-800 dark:text-blue-300">
-              Пополнение баланса доступно после регистрации — это бесплатно и занимает секунды. Зарегистрированные получают 300 кредитов каждый час по акции.
+              Пополнение баланса доступно после регистрации — это бесплатно и занимает секунды. Зарегистрированные получают 300 токенов каждый час по акции.
             </div>
             <button onClick={onAuthRequired} className="btn btn-md btn-primary mt-4 px-6 py-2.5 max-md:w-full">Создать аккаунт / Войти</button>
           </>
         ) : (
           <>
             <h3 className="font-semibold text-slate-900 dark:text-white">Использование</h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Баланс кредитов гостя • 30 в день</p>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Баланс токенов гостя • 30 в час</p>
             <div className="mt-4">
               <CreditsPanel onTopUp={onAuthRequired} />
             </div>
             <div className="mt-4 p-3 rounded-xl bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900 text-xs text-blue-800 dark:text-blue-300">
-              Регистрация бесплатная: 300 кредитов каждый час вместо 30 в день, накопительный баланс и история операций.
+              Регистрация бесплатная: 300 токенов каждый час вместо 30 у гостей, накопительный баланс и история операций.
             </div>
             <button onClick={onAuthRequired} className="btn btn-md bg-slate-900 dark:bg-white text-white dark:text-slate-900 hover:bg-slate-700 dark:hover:bg-slate-200 mt-3 px-6 py-2.5 max-md:w-full">Пополнить баланс</button>
           </>

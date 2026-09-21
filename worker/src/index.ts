@@ -1,5 +1,5 @@
 /**
- * SNIP Worker — auth, кредиты, /ask → Groq, /embed → Gemini.
+ * SNIP Worker — auth, токены, /ask → Groq, /embed → Gemini.
  * Без зависимостей: WebCrypto (PBKDF2 + JWT HS256), D1, fetch.
  */
 
@@ -1563,7 +1563,8 @@ async function vectorTopK(env: Env, query: string, k: number): Promise<number[]>
 
 const todayKey = (): string => new Date().toISOString().slice(0, 10);
 const hourKey = (): string => new Date().toISOString().slice(0, 13);
-const periodKey = (isUser: boolean): string => (isUser ? hourKey() : todayKey());
+// Лимитный период почасовой для всех: гости 30/час, зарегистрированные 300/час.
+const periodKey = (_isUser: boolean): string => hourKey();
 
 export interface CreditsState {
   daily: { used: number; limit: number; remaining: number };
@@ -1732,13 +1733,13 @@ export async function getCreditsState(env: Env, subject: string, isUser: boolean
     daily: { used, limit, remaining: Math.max(0, limit - used) },
     balance: balRow?.credits ?? 0,
     plan,
-    reset: isUser ? "hourly" : "daily",
+    reset: "hourly",
   };
 }
 
 interface ChargeSplit { daily: number; balance: number }
 
-/** Списывает cost кредитов: сначала периодный лимит (час для юзеров / день для гостей), затем накопительный баланс. */
+/** Списывает cost токенов: сначала часовой лимит, затем накопительный баланс. */
 export async function chargeHybrid(
   env: Env,
   subject: string,
@@ -2996,7 +2997,7 @@ export default {
           const res = await chargeHybrid(env, subject, isUser, lim.fast, "spend_fast");
           if (!res.ok) {
             return json(
-              { error: "insufficient_credits", detail: "Недостаточно кредитов для быстрого поиска", ...res.state, need: res.need },
+              { error: "insufficient_credits", detail: "Недостаточно токенов для быстрого поиска", ...res.state, need: res.need },
               402,
               cors
             );
@@ -3110,7 +3111,7 @@ export default {
       }
 
       // POST /api/voice (multipart audio) → {text} через Groq Whisper.
-      // Резерв для Web Speech при ошибке network. Без списания кредитов и записей в D1.
+      // Резерв для Web Speech при ошибке network. Без списания токенов и записей в D1.
       if (url.pathname === "/api/voice" && req.method === "POST") {
         const day = todayKey();
         const key = voiceThrottleKey(req);
@@ -3202,7 +3203,7 @@ export default {
         );
       }
 
-      // GET /api/me — профиль: uid/email/имя/кулдаун смены/кредиты
+      // GET /api/me — профиль: uid/email/имя/кулдаун смены/токены
       if (url.pathname === "/api/me" && req.method === "GET") {
         const auth = req.headers.get("Authorization");
         if (!auth?.startsWith("Bearer ")) return json({ error: "unauthorized" }, 401, cors);
@@ -3316,7 +3317,7 @@ export default {
         const res = await chargeHybrid(env, subject, isUser, cost, `spend_${mode}`);
         if (!res.ok) {
           return json(
-            { error: "insufficient_credits", detail: "Недостаточно кредитов", ...res.state, need: res.need },
+            { error: "insufficient_credits", detail: "Недостаточно токенов", ...res.state, need: res.need },
             402,
             cors
           );
@@ -3497,7 +3498,7 @@ export default {
         const spend = await chargeHybrid(env, subject, isUser, cost, spendKind);
         if (!spend.ok || !spend.split) {
           return json(
-            { error: "insufficient_credits", detail: isFollowUp ? "Недостаточно кредитов для уточняющего вопроса" : "Недостаточно кредитов для глубокого поиска", ...spend.state, need: spend.need },
+            { error: "insufficient_credits", detail: isFollowUp ? "Недостаточно токенов для уточняющего вопроса" : "Недостаточно токенов для глубокого поиска", ...spend.state, need: spend.need },
             402,
             cors
           );
@@ -3738,7 +3739,7 @@ export default {
             cors
           );
         } catch (e: any) {
-          // внутренняя ошибка — возвращаем списанные кредиты (await: баланс в ответе уже свежий)
+          // внутренняя ошибка — возвращаем списанные токены (await: баланс в ответе уже свежий)
           try {
             await refundCharge(env, subject, isUser, cost, spend.split, refundKind);
           } catch {}
@@ -3816,7 +3817,7 @@ export default {
         return json({ explanation, cached: false, usage: { used: count + 1, cap }, credits: st }, 200, cors);
       }
 
-      // ---------- Фидбек под ответом: 👍/👎 + причина + коммент. Без списания кредитов. ----------
+      // ---------- Фидбек под ответом: 👍/👎 + причина + коммент. Без списания токенов. ----------
       if (url.pathname === "/api/feedback" && req.method === "POST") {
         const { subject, isUser } = await subjectFromRequest(env, req);
         const day = todayKey();

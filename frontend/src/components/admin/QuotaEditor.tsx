@@ -3,11 +3,11 @@ import { saveAdminSetting } from '../../hooks/useAdmin'
 import { Icon } from '../Icon'
 
 export const QUOTA_FIELDS: { key: string; label: string; hint: string; unit: string }[] = [
-  { key: 'quota_anon', label: 'Гостям в день', hint: 'Бесплатный лимит без входа, сброс в 00:00 UTC', unit: 'кредитов/день' },
-  { key: 'quota_user', label: 'Пользователям в час', hint: 'Акция: каждый час заново', unit: 'кредитов/час' },
-  { key: 'cost_fast', label: 'Быстрый поиск', hint: '3 результата', unit: 'кредитов' },
-  { key: 'cost_deep', label: 'Глубокий поиск', hint: 'До 30 результатов + ответ', unit: 'кредитов' },
-  { key: 'cost_followup', label: 'Уточняющий вопрос', hint: 'Follow-up к ответу, без нового поиска', unit: 'кредитов' },
+  { key: 'quota_anon', label: 'Гостям в час', hint: 'Бесплатный лимит без входа, сброс каждый час', unit: 'токенов/час' },
+  { key: 'quota_user', label: 'Пользователям в час', hint: 'Акция: каждый час заново', unit: 'токенов/час' },
+  { key: 'cost_fast', label: 'Быстрый поиск', hint: '3 результата', unit: 'токенов' },
+  { key: 'cost_deep', label: 'Глубокий поиск', hint: 'До 30 результатов + ответ', unit: 'токенов' },
+  { key: 'cost_followup', label: 'Уточняющий вопрос', hint: 'Follow-up к ответу, без нового поиска', unit: 'токенов' },
   { key: 'explain_cap', label: 'Объяснения фрагментов', hint: 'В день, только подписчикам PRO/Бизнес', unit: '/день' },
 ]
 

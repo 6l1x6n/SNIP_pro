@@ -83,7 +83,7 @@ export function HistorySearchModal({
           ) : undefined
         }
         onOpen={() => choose(h)}
-        titleOpenLabel={saved ? `Открыть сессию «${h}» бесплатно — кредиты не спишутся` : `Вставить «${h}» в поиск`}
+        titleOpenLabel={saved ? `Открыть сессию «${h}» бесплатно — токены не спишутся` : `Вставить «${h}» в поиск`}
       />
     )
   }

@@ -299,7 +299,7 @@ export default function App() {
               <div className="text-center mb-4">
                 <img src="/logo-64.png" alt="snippy.llm" className="w-14 h-14 mx-auto rounded-xl object-cover ring-1 ring-slate-200 dark:ring-slate-700 bg-white" />
                 <h3 className="font-semibold text-slate-900 dark:text-white mt-3 text-lg">Войдите, чтобы продолжить</h3>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">300 кредитов каждый час вместо 30 в день • бесплатно, без карты</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">300 токенов каждый час вместо 30 у гостей • бесплатно, без карты</p>
               </div>
               {authMode === 'login' ? <LoginForm onSwitch={() => setAuthMode('register')} onSuccess={() => setShowAuth(false)} /> : <RegisterForm onSwitch={() => setAuthMode('login')} onSuccess={() => setShowAuth(false)} />}
             </div>
@@ -425,7 +425,7 @@ export default function App() {
       <MobileNav tab={tab} favCount={favCount} isAdmin={isAdmin} onGo={goMobile} />
       <footer className="mt-auto border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
         <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between gap-3 text-[11px] text-slate-400 dark:text-slate-500">
-          <span className="truncate" title="Ответ только при найденной норме; без источника — честно говорит «не найдено»">snippy.llm<span className="max-md:hidden"> • быстрый поиск 5 кредитов • глубокий — 10 • нет источника → нет утверждения</span></span>
+          <span className="truncate" title="Ответ только при найденной норме; без источника — честно говорит «не найдено»">snippy.llm<span className="max-md:hidden"> • быстрый поиск 5 токенов • глубокий — 10 • нет источника → нет утверждения</span></span>
           <button onClick={() => setShowShortcuts(true)} className="inline-flex items-center gap-1.5 hover:text-slate-600 dark:hover:text-slate-300 transition shrink-0"><Icon name="keyboard" size={13} /> Горячие клавиши</button>
         </div>
       </footer>

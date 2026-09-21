@@ -152,7 +152,7 @@ export function useSearch(opts: UseSearchOptions) {
   const respRef = useRef<SearchResponse | null>(null)
   respRef.current = resp
   // Антиспам: дубль того же запроса <10с (двойной клик по «Найти») — игнор,
-  // иначе каждый клик списывал бы кредиты. Ключ нормализован: регистр/пробелы/режим/фильтры
+  // иначе каждый клик списывал бы токены. Ключ нормализован: регистр/пробелы/режим/фильтры
   // не дают обойти защиту. Осознанный повтор позже — дёшево (кэш ask бесплатен, fast-кэш 30с).
   const lastSearchRef = useRef<{ key: string; t: number }>({ key: '', t: 0 })
   const searchKey = (q: string) =>
@@ -197,7 +197,7 @@ export function useSearch(opts: UseSearchOptions) {
     setError(null)
 
     try {
-      // Единая логика для всех режимов: «Найти» без кредитов = 0 сети и 0 трат.
+      // Единая логика для всех режимов: «Найти» без токенов = 0 сети и 0 трат.
       // Префлайт до embed/rewrite/ask: если доступно < cost — локальный BM25 топ-3
       // + 1 карточка значений + баннер. Провайдерские квоты не тратятся вообще.
       if (!ctrl.signal.aborted) {
@@ -237,7 +237,7 @@ export function useSearch(opts: UseSearchOptions) {
             return
           }
         } catch {
-          // Кредиты не прочитались — идём обычным путём, сервер сам вернёт 402.
+          // Токены не прочитались — идём обычным путём, сервер сам вернёт 402.
         }
       }
       // Гибридный поиск — целиком в браузере. fast → 3 результата, deep → до 30.
@@ -398,10 +398,10 @@ export function useSearch(opts: UseSearchOptions) {
       // Дружелюбный текст вместо "embed failed: 502 — cohere embed 429"
       if (e?.rateLimited || e?.status === 429) {
         const wait = typeof e?.retryAfterMs === 'number' ? ` (повтор через ~${Math.max(1, Math.ceil(e.retryAfterMs / 1000))} с)` : ''
-        setError(`Лимит эмбеддингов временно исчерпан${wait} — подождите и нажмите поиск ещё раз. Кредиты за неудавшийся поиск возвращены автоматически.`)
+        setError(`Лимит эмбеддингов временно исчерпан${wait} — подождите и нажмите поиск ещё раз. Токены за неудавшийся поиск возвращены автоматически.`)
         fetchCredits(true).catch(() => {})
       } else if (typeof e?.message === 'string' && e.message.startsWith('embed failed')) {
-        setError('Векторный поиск временно недоступен — попробуйте ещё раз через несколько секунд. Кредиты за неудавшийся поиск возвращены автоматически.')
+        setError('Векторный поиск временно недоступен — попробуйте ещё раз через несколько секунд. Токены за неудавшийся поиск возвращены автоматически.')
         fetchCredits(true).catch(() => {})
       } else {
         setError(e.message || 'Ошибка поиска')

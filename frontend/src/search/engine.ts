@@ -320,7 +320,7 @@ export async function search(query: string, opts?: { mode?: SearchMode; topK?: n
       qVec = avg.map((x) => x / norm);
     }
   } catch (e: any) {
-    // 402 = нет кредитов: не деградируем в бесплатный BM25, пробрасываем наверх,
+    // 402 = нет токенов: не деградируем в бесплатный BM25, пробрасываем наверх,
     // иначе stale-баланс даст бесплатный обход оплаты. Локальный fallback
     // (noNetwork) — деградирует как раньше, сети и квот там нет.
     if (e?.insufficientCredits && !e?.noNetwork) throw e;
