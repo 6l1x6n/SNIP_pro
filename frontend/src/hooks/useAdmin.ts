@@ -173,3 +173,38 @@ export async function freezeUser(uid: string, reason = ''): Promise<{ ok: boolea
   if (!r.ok) throw new Error(d?.error || `freeze ${r.status}`)
   return d
 }
+
+// ---------- Удаление аккаунтов в архив (30 дней) ----------
+
+export interface DeletionReason { id: string; title: string; template: string }
+
+export const fetchDeletionReasons = () => get<{ reasons: DeletionReason[] }>('/api/admin/deletion-reasons')
+
+export interface ArchivedUser {
+  email: string; uid: string; full_name: string | null; reason_title: string; reason_text: string
+  deleted_by: string; deleted_at: string; purge_after: string; days_left: number
+}
+
+export const fetchArchivedUsers = () => get<{ archived: ArchivedUser[] }>('/api/admin/archived')
+
+export async function deleteUserToArchive(uid: string, reason: string, reason_text?: string): Promise<{ ok: boolean; purge_after: string }> {
+  const r = await authFetch(`${WORKER_BASE}/api/admin/delete-user`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uid, reason, reason_text }),
+  })
+  const d = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(d?.detail || d?.error || `delete ${r.status}`)
+  return d
+}
+
+export async function restoreUserFromArchive(email: string): Promise<{ ok: boolean }> {
+  const r = await authFetch(`${WORKER_BASE}/api/admin/restore-user`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  })
+  const d = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(d?.detail || d?.error || `restore ${r.status}`)
+  return d
+}

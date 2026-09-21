@@ -58,6 +58,46 @@ export const PACKS: Record<string, { label: string; price: number; credits: numb
   pack_max: { label: "Максимум", price: 9990, credits: 1300 },
 };
 
+// ---------- Удаление аккаунтов: архив 30 дней ----------
+export const ARCHIVE_DAYS = 30;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+/** Причины удаления с шаблонами писем; {имя} подставляется в момент удаления. */
+export const DELETION_REASONS: Array<{ id: string; title: string; template: string }> = [
+  {
+    id: "violation",
+    title: "Нарушение правил использования",
+    template:
+      "Ваш аккаунт удалён за нарушение правил использования сервиса (автоматизированные запросы, обход лимитов или иной злоупотребительный сценарий). " +
+      "Данные аккаунта хранятся в архиве 30 дней, после чего будут удалены безвозвратно.",
+  },
+  {
+    id: "multiaccount",
+    title: "Мультиаккаунт",
+    template:
+      "Обнаружено несколько аккаунтов, созданных для обхода лимитов сервиса. Этот аккаунт удалён; " +
+      "данные хранятся в архиве 30 дней, после чего будут удалены безвозвратно.",
+  },
+  {
+    id: "on_request",
+    title: "Удаление по запросу владельца",
+    template:
+      "По вашей просьбе аккаунт удалён. Данные хранятся в архиве 30 дней: если передумаете, {имя}, напишите нам — администратор восстановит аккаунт. " +
+      "После этого срока данные будут удалены безвозвратно.",
+  },
+  {
+    id: "other",
+    title: "Другое",
+    template: "Ваш аккаунт удалён администратором. Подробности — ниже.",
+  },
+];
+
+/** Шаблон причины → финальный текст письма: обращение + подстановка {имя} в любом месте текста. */
+export function buildDeletionText(name: string | null, template: string): string {
+  const who = String(name ?? "").trim() || "пользователь";
+  return `Уважаемый ${who}! ${String(template ?? "").trim().replaceAll("{имя}", who)}`;
+}
+
 const CORS_HEADERS = (env: Env, origin: string | null): Record<string, string> => {
   const allowed = env.ALLOWED_ORIGINS.split(",").map((s) => s.trim());
   // «https://*.pages.dev» — звёздочка в начале хоста: матчим через regex,
@@ -1595,6 +1635,41 @@ async function ensureUserNameColumns(env: Env): Promise<void> {
       /* колонка уже есть — ок */
     }
   }
+}
+
+// ---------- Архив удалённых аккаунтов (30 дней, ленивая чистка) ----------
+
+async function ensureArchivedTable(env: Env): Promise<void> {
+  try {
+    await env.DB.prepare(
+      "CREATE TABLE IF NOT EXISTS archived_users (email TEXT PRIMARY KEY, uid TEXT NOT NULL, full_name TEXT, password_hash TEXT NOT NULL, created_at TEXT, reason TEXT NOT NULL, reason_title TEXT NOT NULL, reason_text TEXT NOT NULL, deleted_by TEXT NOT NULL, deleted_at TEXT NOT NULL, purge_after TEXT NOT NULL)"
+    ).run();
+  } catch {
+    /* уже есть — ок */
+  }
+}
+
+/** Просроченные записи архива удаляются при любом касании (без крона). */
+export async function purgeExpiredArchive(env: Env): Promise<void> {
+  const nowIso = new Date().toISOString();
+  try {
+    const stale = await env.DB.prepare("SELECT uid FROM archived_users WHERE purge_after < ?").bind(nowIso).all<{ uid: string }>();
+    for (const r of stale.results ?? []) {
+      await env.DB.batch([
+        env.DB.prepare("DELETE FROM archived_users WHERE uid = ?").bind(r.uid),
+        env.DB.prepare("DELETE FROM balances WHERE subject = ?").bind(`user:${r.uid}`),
+        env.DB.prepare("DELETE FROM usage WHERE subject = ?").bind(`user:${r.uid}`),
+      ]);
+    }
+  } catch {
+    /* таблицы может не быть — ок */
+  }
+}
+
+/** Дата по-русски для сообщений: «2026-10-21T…» → «21.10.2026». */
+export function fmtRuDate(iso: string): string {
+  const m = /(\d{4})-(\d{2})-(\d{2})/.exec(String(iso ?? ""));
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : String(iso ?? "");
 }
 
 async function getActivePlan(env: Env, subject: string): Promise<string | null> {
@@ -3158,8 +3233,21 @@ export default {
         const { email, password, full_name } = (await req.json()) as any;
         if (!email || !password || String(password).length < 6)
           return json({ error: "email и password (6+) обязательны" }, 400, cors);
+        // мейлера нет — формат почты строго на входе
+        if (!EMAIL_RE.test(String(email).trim()))
+          return json({ error: "Некорректный формат email" }, 400, cors);
+        await ensureArchivedTable(env);
+        await purgeExpiredArchive(env);
         const exists = await env.DB.prepare("SELECT id FROM users WHERE email=?").bind(email).first();
         if (exists) return json({ error: "email уже зарегистрирован" }, 409, cors);
+        // почта удалённого аккаунта на архивном хранении — не отдаём (иначе аккаунт перехватят)
+        const archived = await env.DB.prepare("SELECT purge_after FROM archived_users WHERE email=?").bind(email).first<{ purge_after: string }>();
+        if (archived)
+          return json(
+            { error: "email_archived", detail: `Эта почта на архивном хранении до ${fmtRuDate(archived.purge_after)} — после этой даты регистрация станет доступна` },
+            409,
+            cors
+          );
         await ensureUserNameColumns(env);
         const uid = crypto.randomUUID();
         const nowIso = new Date().toISOString();
@@ -3195,7 +3283,36 @@ export default {
         } catch {
           row = await env.DB.prepare("SELECT id,password_hash FROM users WHERE email=?").bind(email).first<{ id: string; password_hash: string }>();
         }
-        if (!row || !(await verifyPassword(password, row.password_hash))) return json({ error: "неверный email или пароль" }, 401, cors);
+        if (!row) {
+          // аккаунта нет — возможно, удалён: для владельца (пароль верный) показываем уведомление,
+          // неверный пароль — обычная 401 (факт удаления не светим посторонним)
+          await ensureArchivedTable(env);
+          await purgeExpiredArchive(env);
+          const arc = await env.DB.prepare(
+            "SELECT full_name, password_hash, reason_title, reason_text, deleted_by, deleted_at, purge_after FROM archived_users WHERE email=?"
+          )
+            .bind(email)
+            .first<{ full_name: string | null; password_hash: string; reason_title: string; reason_text: string; deleted_by: string; deleted_at: string; purge_after: string }>();
+          if (arc && (await verifyPassword(password, arc.password_hash))) {
+            return json(
+              {
+                error: "account_deleted",
+                notice: {
+                  full_name: arc.full_name,
+                  reason_title: arc.reason_title,
+                  reason_text: arc.reason_text,
+                  deleted_by: arc.deleted_by,
+                  deleted_at: arc.deleted_at,
+                  purge_after: arc.purge_after,
+                },
+              },
+              403,
+              cors
+            );
+          }
+          return json({ error: "неверный email или пароль" }, 401, cors);
+        }
+        if (!(await verifyPassword(password, row.password_hash))) return json({ error: "неверный email или пароль" }, 401, cors);
         return json(
           { uid: row.id, email, full_name: (row as any).full_name ?? null, token: await signJwt({ uid: row.id, email }, env.JWT_SECRET) },
           200,
@@ -4160,6 +4277,82 @@ export default {
             cors
           );
         }
+        // GET /api/admin/deletion-reasons — список причин с шаблонами для модалки удаления
+        if (url.pathname === "/api/admin/deletion-reasons" && req.method === "GET") {
+          return json({ reasons: DELETION_REASONS }, 200, cors);
+        }
+
+        // GET /api/admin/archived — архив удалённых аккаунтов (+ ленивая чистка просроченных)
+        if (url.pathname === "/api/admin/archived" && req.method === "GET") {
+          await ensureArchivedTable(env);
+          await purgeExpiredArchive(env);
+          const rows = await env.DB.prepare(
+            "SELECT email, uid, full_name, reason_title, reason_text, deleted_by, deleted_at, purge_after FROM archived_users ORDER BY deleted_at DESC LIMIT 200"
+          ).all();
+          const archived = (rows.results ?? []).map((r: any) => ({
+            ...r,
+            days_left: Math.max(0, Math.ceil((Date.parse(r.purge_after) - Date.now()) / 86400000)),
+          }));
+          return json({ archived }, 200, cors);
+        }
+
+        // POST /api/admin/delete-user {uid, reason, reason_text?} — удаление в архив на 30 дней
+        if (url.pathname === "/api/admin/delete-user" && req.method === "POST") {
+          const body = (await req.json().catch(() => ({}))) as any;
+          const uid = String(body.uid ?? "").slice(0, 64);
+          const reason = DELETION_REASONS.find((r) => r.id === body.reason) ?? DELETION_REASONS[DELETION_REASONS.length - 1];
+          if (!uid) return json({ error: "uid required" }, 400, cors);
+          const user = await env.DB.prepare("SELECT id, email, password_hash, full_name, created_at FROM users WHERE id=?").bind(uid).first<{
+            id: string; email: string; password_hash: string; full_name: string | null; created_at: string | null;
+          }>();
+          if (!user) return json({ error: "user not found" }, 404, cors);
+          await ensureArchivedTable(env);
+          const nowIso = new Date().toISOString();
+          const purgeAfter = new Date(Date.now() + ARCHIVE_DAYS * 86400000).toISOString();
+          const name = normalizeName(user.full_name);
+          const text = buildDeletionText(name, String(body.reason_text ?? "").trim() || reason.template);
+          const subject = `user:${uid}`;
+          const bal = await env.DB.prepare("SELECT credits FROM balances WHERE subject=?").bind(subject).first<{ credits: number }>();
+          const take = bal?.credits ?? 0;
+          await env.DB.batch([
+            env.DB.prepare(
+              "INSERT INTO archived_users (email, uid, full_name, password_hash, created_at, reason, reason_title, reason_text, deleted_by, deleted_at, purge_after) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(email) DO UPDATE SET uid=excluded.uid, full_name=excluded.full_name, password_hash=excluded.password_hash, created_at=excluded.created_at, reason=excluded.reason, reason_title=excluded.reason_title, reason_text=excluded.reason_text, deleted_by=excluded.deleted_by, deleted_at=excluded.deleted_at, purge_after=excluded.purge_after"
+            ).bind(user.email, user.id, name || null, user.password_hash, user.created_at, reason.id, reason.title, text, admin.email, nowIso, purgeAfter),
+            env.DB.prepare("DELETE FROM users WHERE id = ?").bind(uid),
+            env.DB.prepare(
+              "INSERT INTO balances (subject, credits, updated_at) VALUES (?, 0, ?) ON CONFLICT(subject) DO UPDATE SET credits=0, updated_at=excluded.updated_at"
+            ).bind(subject, nowIso),
+            env.DB.prepare("INSERT INTO ledger (subject, delta, kind, meta, created_at) VALUES (?, ?, 'grant', ?, ?)").bind(
+              subject,
+              -take,
+              JSON.stringify({ deleted: true, by: admin.email, reason: reason.id }),
+              nowIso
+            ),
+          ]);
+          return json({ ok: true, purge_after: purgeAfter }, 200, cors);
+        }
+
+        // POST /api/admin/restore-user {email} — возврат из архива до конца срока
+        if (url.pathname === "/api/admin/restore-user" && req.method === "POST") {
+          const body = (await req.json().catch(() => ({}))) as any;
+          const email = String(body.email ?? "").slice(0, 200);
+          if (!email) return json({ error: "email required" }, 400, cors);
+          await ensureArchivedTable(env);
+          await purgeExpiredArchive(env);
+          const arc = await env.DB.prepare(
+            "SELECT email, uid, full_name, password_hash, created_at FROM archived_users WHERE email=?"
+          ).bind(email).first<{ email: string; uid: string; full_name: string | null; password_hash: string; created_at: string | null }>();
+          if (!arc) return json({ error: "not in archive" }, 404, cors);
+          const exists = await env.DB.prepare("SELECT id FROM users WHERE email=?").bind(email).first();
+          if (exists) return json({ error: "email уже занят живым аккаунтом" }, 409, cors);
+          await env.DB.batch([
+            env.DB.prepare("INSERT INTO users (id, email, password_hash, full_name, created_at) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET email=excluded.email, password_hash=excluded.password_hash, full_name=excluded.full_name")
+              .bind(arc.uid, arc.email, arc.password_hash, arc.full_name, arc.created_at ?? new Date().toISOString()),
+            env.DB.prepare("DELETE FROM archived_users WHERE email = ?").bind(email),
+          ]);
+          return json({ ok: true }, 200, cors);
+        }
+
         // POST /api/admin/freeze {uid, reason?} — заморозка: баланс в 0 + запись в ledger (без новых таблиц)
         if (url.pathname === "/api/admin/freeze" && req.method === "POST") {
           const body = (await req.json().catch(() => ({}))) as any;

@@ -28,6 +28,17 @@ type AuthState = {
 
 const Ctx = createContext<AuthState>(null as any)
 
+/** Ошибка аутентификации с машинным кодом и полезной нагрузкой (например, уведомление удалённого аккаунта). */
+export class AuthError extends Error {
+  code?: string
+  notice?: Record<string, unknown>
+  constructor(message: string, code?: string, notice?: Record<string, unknown>) {
+    super(message)
+    this.code = code
+    this.notice = notice
+  }
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem('snip_token'))
   const [user, setUser] = useState<User | null>(null)
@@ -123,7 +134,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       throw e
     }
     const data = await r.json().catch(() => ({}) as any)
-    if (!r.ok) throw new Error(data.error || 'Login failed')
+    if (!r.ok) throw new AuthError(data.detail || data.error || 'Login failed', data.error, data.notice)
     localStorage.setItem('snip_token', data.token)
     setToken(data.token)
     invalidateCreditsCache()
@@ -156,7 +167,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       throw e
     }
     const data = await r.json().catch(() => ({}) as any)
-    if (!r.ok) throw new Error(data.error || 'Register failed')
+    if (!r.ok) throw new AuthError(data.detail || data.error || 'Register failed', data.error, data.notice)
     localStorage.setItem('snip_token', data.token)
     setToken(data.token)
     invalidateCreditsCache()

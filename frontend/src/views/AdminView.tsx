@@ -4,6 +4,8 @@ import { SnakeState } from '../components/SnakeState'
 import { isAdminEmail } from '../utils/admin'
 import {
   fetchAdminStats, fetchAdminUsers, fetchAdminActivity, freezeUser,
+  fetchDeletionReasons, fetchArchivedUsers, deleteUserToArchive, restoreUserFromArchive,
+  type DeletionReason, type ArchivedUser,
   fetchAdminSettings, fetchAdminHealth, saveAdminSetting, displaySubject,
   fetchAdminFeedback,
 } from '../hooks/useAdmin'
@@ -20,13 +22,14 @@ const PROVIDER_LABEL: Record<string, string> = {
   mistral: 'Mistral',
 }
 
-type SectionId = 'overview' | 'quotas' | 'users' | 'activity' | 'errors' | 'params' | 'feedback'
+type SectionId = 'overview' | 'quotas' | 'users' | 'archive' | 'activity' | 'errors' | 'params' | 'feedback'
 
 const SECTIONS: { id: SectionId; label: string }[] = [
   { id: 'overview', label: 'Обзор' },
   { id: 'quotas', label: 'Квоты ИИ' },
   { id: 'feedback', label: 'Фидбек' },
   { id: 'users', label: 'Пользователи' },
+  { id: 'archive', label: 'Архив' },
   { id: 'activity', label: 'Активность' },
   { id: 'errors', label: 'Ошибки' },
   { id: 'params', label: 'Параметры' },
@@ -148,6 +151,12 @@ export function AdminView({ user }: { user: any }) {
   const [aTotal, setATotal] = useState(0)
   const [aOff, setAOff] = useState(0)
   const [freezing, setFreezing] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState<any>(null) // пользователь в модалке удаления
+  const [reasons, setReasons] = useState<DeletionReason[]>([])
+  const [delReason, setDelReason] = useState<DeletionReason | null>(null)
+  const [delText, setDelText] = useState('')
+  const [delBusy, setDelBusy] = useState(false)
+  const [archived, setArchived] = useState<ArchivedUser[]>([])
   // feedback
   const [fbRating, setFbRating] = useState<'all' | '1' | '-1'>('all')
   const [fbItems, setFbItems] = useState<any[]>([])
@@ -201,7 +210,11 @@ export function AdminView({ user }: { user: any }) {
   }
 
   useEffect(() => { loadStats() }, [])
-  useEffect(() => { if (section === 'users' && !users.length) loadUsers(0) }, [section])
+  useEffect(() => { if (section === 'users' && !users.length) loadUsers(0) }, [section]) // eslint-disable-line
+  useEffect(() => {
+    if (section !== 'archive' || archived.length) return
+    fetchArchivedUsers().then((d) => setArchived(d.archived)).catch(() => {})
+  }, [section]) // eslint-disable-line
   useEffect(() => { if ((section === 'activity' || section === 'errors') && !acts.length) loadActs(0, kinds) }, [section])
   useEffect(() => { if ((section === 'quotas' || section === 'params') && !settings) loadSettings() }, [section])
   useEffect(() => { if (section === 'params' && !health) loadHealth() }, [section])
@@ -414,6 +427,7 @@ export function AdminView({ user }: { user: any }) {
                     <div className="text-slate-400 truncate" title={umeta}>{umeta}</div>
                   </div>
                   <button disabled={freezing === u.id} onClick={async () => { if (!confirm(`Заморозить ${u.email}? Баланс ${u.balance} будет обнулён.`)) return; setFreezing(u.id); try { const r = await freezeUser(u.id, 'freeze from admin'); alert(`Заморожено: ${r.frozen}`); loadUsers(uOff) } catch { alert('Ошибка заморозки') } finally { setFreezing(null) } }} className="btn btn-sm border border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 bg-transparent hover:bg-red-50 dark:hover:bg-red-950/30 shrink-0 w-[110px] justify-center">Заморозить</button>
+                  <button onClick={async () => { setDeleting(u); if (!reasons.length) { try { const d = await fetchDeletionReasons(); setReasons(d.reasons) } catch {} } }} className="btn btn-sm border border-red-300 dark:border-red-900 text-red-600 dark:text-red-400 bg-transparent hover:bg-red-50 dark:hover:bg-red-950/30 shrink-0 w-[110px] justify-center"><Icon name="trash" size={12} /> Удалить</button>
                 </div>
                 )
               })}
@@ -421,6 +435,74 @@ export function AdminView({ user }: { user: any }) {
                 <button disabled={uOff === 0} onClick={() => loadUsers(uOff - 50)} className="btn btn-sm btn-secondary"><Icon name="arrowLeft" size={12} /> Назад</button>
                 <button disabled={uOff + 50 >= uTotal} onClick={() => loadUsers(uOff + 50)} className="btn btn-sm btn-secondary">Вперёд <Icon name="arrowRight" size={12} /></button>
               </div>
+            </div>
+          )}
+
+          {/* Модалка удаления аккаунта в архив */}
+          {deleting && (
+            <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => !delBusy && setDeleting(null)}>
+              <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 p-5 max-w-lg w-full space-y-3" onClick={(e) => e.stopPropagation()}>
+                <div className="font-semibold text-slate-900 dark:text-white">Удалить аккаунт в архив</div>
+                <div className="text-xs text-slate-500 dark:text-slate-400">
+                  {deleting.email} • аккаунт исчезнет из системы, но 30 дней будет храниться в архиве (можно восстановить).
+                </div>
+                <select
+                  value={delReason?.id ?? ''}
+                  onChange={(e) => {
+                    const r = reasons.find((x) => x.id === e.target.value) ?? null
+                    setDelReason(r)
+                    if (r) setDelText((r.template || '').replaceAll('{имя}', deleting.full_name || 'пользователь'))
+                  }}
+                  className="input"
+                >
+                  <option value="" disabled>Выберите причину…</option>
+                  {reasons.map((r) => <option key={r.id} value={r.id}>{r.title}</option>)}
+                </select>
+                {delReason && (
+                  <>
+                    <textarea value={delText} onChange={(e) => setDelText(e.target.value)} rows={6} className="input text-sm" />
+                    <div className="text-[11px] text-slate-400">Это письмо увидит пользователь при попытке входа. Обращение «Уважаемый …» добавится автоматически.</div>
+                  </>
+                )}
+                <div className="flex gap-2 justify-end pt-1">
+                  <button disabled={delBusy} onClick={() => { setDeleting(null); setDelReason(null); setDelText('') }} className="btn btn-sm btn-secondary">Отмена</button>
+                  <button
+                    disabled={delBusy || !delReason}
+                    onClick={async () => {
+                      if (!deleting || !delReason) return
+                      setDelBusy(true)
+                      try {
+                        await deleteUserToArchive(deleting.id, delReason.id, delText)
+                        setDeleting(null); setDelReason(null); setDelText('')
+                        loadUsers(uOff)
+                      } catch (e: any) { alert(e.message || 'Ошибка удаления') } finally { setDelBusy(false) }
+                    }}
+                    className="btn btn-sm bg-red-600 hover:bg-red-700 text-white"
+                  >Удалить</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {section === 'archive' && (
+            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
+              <div className="text-xs text-slate-400 mb-2">Удалённые аккаунты • хранятся 30 дней, затем очищаются автоматически</div>
+              {!archived.length && <div className="text-sm text-slate-500">Архив пуст.</div>}
+              {archived.map((a) => (
+                <div key={a.email} className="flex items-center gap-2 text-xs py-2 border-b border-slate-100 dark:border-slate-800 last:border-0">
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium text-slate-800 dark:text-slate-100 truncate" title={a.email}>{a.email}{a.full_name ? ` • ${a.full_name}` : ''}</div>
+                    <div className="text-slate-400 truncate" title={`${a.reason_title}: ${a.reason_text}`}>
+                      {a.reason_title} • удалил {a.deleted_by} • {new Date(a.deleted_at).toLocaleDateString('ru-RU')} • осталось {a.days_left} дн.
+                    </div>
+                  </div>
+                  <button
+                    onClick={async () => { if (!confirm(`Восстановить ${a.email}?`)) return; try { await restoreUserFromArchive(a.email); setArchived((prev) => prev.filter((x) => x.email !== a.email)) } catch (e: any) { alert(e.message || 'Ошибка восстановления') } }}
+                    className="btn btn-sm btn-secondary shrink-0 w-[110px] justify-center"
+                  >Восстановить</button>
+                </div>
+              ))}
+              <button onClick={() => { setArchived([]); fetchArchivedUsers().then((d) => setArchived(d.archived)).catch(() => {}) }} className="btn btn-sm btn-secondary mt-3"><Icon name="refresh" size={12} /> Обновить</button>
             </div>
           )}
 
