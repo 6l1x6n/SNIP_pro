@@ -261,10 +261,20 @@ export async function setAdminPassword(uid: string, password: string): Promise<{
   return d
 }
 
-/** Случайный читаемый пароль: 3 слова-число — легко диктовать. */
+/** Случайный пароль: латиница + цифры + символы, 14 знаков, без неоднозначных 0O/1lI. */
 export function generatePassword(): string {
-  const words = ['норма', 'снип', 'кодекс', 'балка', 'ферма', 'бетон', 'арматура', 'фундамент', 'уклон', 'маяк']
-  const pick = () => words[Math.floor(Math.random() * words.length)]
-  const n = Math.floor(10 + Math.random() * 90)
-  return `${pick()}-${pick()}-${n}`
+  const lower = 'abcdefghijkmnpqrstuvwxyz'
+  const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
+  const digits = '23456789'
+  const symbols = '!№%&*+-_?='
+  const all = lower + upper + digits + symbols
+  const rnd = (n: number) => crypto.getRandomValues(new Uint32Array(1))[0] % n
+  // гарантированно по одному классу, добиваем до 14 и перемешиваем
+  const chars = [lower[rnd(lower.length)], upper[rnd(upper.length)], digits[rnd(digits.length)], symbols[rnd(symbols.length)]]
+  while (chars.length < 14) chars.push(all[rnd(all.length)])
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = rnd(i + 1)
+    ;[chars[i], chars[j]] = [chars[j], chars[i]]
+  }
+  return chars.join('')
 }
