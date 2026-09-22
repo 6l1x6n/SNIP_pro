@@ -12,6 +12,7 @@ import { FavoritesView } from './views/FavoritesView'
 import { AdminView } from './views/AdminView'
 import { loadFavorites, FAVORITES_EVENT } from './utils/favorites'
 import { isAdminEmail } from './utils/admin'
+import { resolveActiveTab, type Tab } from './utils/tabs'
 import { ProfileMenu } from './components/ProfileMenu'
 import { MobileNav, type MobileTab } from './components/MobileNav'
 import { CreditsBadge } from './components/CreditsBadge'
@@ -33,7 +34,12 @@ export default function App() {
   const { user, logout } = useAuth()
   const { showToast } = useToast()
 
-  const [tab, setTab] = useState<'search' | 'docs' | 'favorites' | 'settings' | 'profile' | 'admin'>('search')
+  const [tab, setTab] = useState<Tab>('search')
+  // Таб, который реально показываем: если доступ потерян (logout, 401,
+  // истёкшая сессия, demotion из админов) — уходим в профиль, а не в пустую
+  // область между header и footer. Состояние `tab` не трогаем: при повторном
+  // входе того же админа админка восстановится сама.
+  const activeTab = resolveActiveTab(tab, user)
   const [highlightPalette, setHighlightPalette] = useState<PaletteId>(() => {
     try {
       const v = localStorage.getItem('snip_highlight_palette')
@@ -155,8 +161,9 @@ export default function App() {
   useEffect(() => { try { localStorage.setItem('snip_highlight_mono_hex', monoHex) } catch {} }, [monoHex])
   useEffect(() => { saveContextMarkMode(contextMarkMode) }, [contextMarkMode])
   useEffect(() => {
-    if (tab === 'docs') docs.loadDocs()
-  }, [tab, search.filterStatus])
+    if (activeTab === 'docs') docs.loadDocs()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, search.filterStatus])
 
   // --- Shared search link (?q=&mode=): автопоиск при открытии + URL всегда отражает текущие результаты ---
   const searchRef = useRef(search)
@@ -252,13 +259,13 @@ export default function App() {
           {/* Десктопные табы: на мобайле скрыты, вместо них нижний MobileNav */}
           <nav className="hidden md:flex items-center gap-0.5 shrink-0">
             {(['search', 'docs', ...(user ? ['favorites'] as const : []), 'profile'] as const).map(t => (
-                <button key={t} onClick={() => t === 'profile' ? goToProfile('overview') : setTab(t)} aria-label={t === 'favorites' && favCount > 0 ? `Избранное, ${favCount}` : undefined} className={`inline-flex items-center px-3 lg:px-4 py-2 text-[13px] lg:text-sm font-medium rounded-xl transition whitespace-nowrap ${tab === t ? 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white' : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'}`}>
+                <button key={t} onClick={() => t === 'profile' ? goToProfile('overview') : setTab(t)} aria-label={t === 'favorites' && favCount > 0 ? `Избранное, ${favCount}` : undefined} className={`inline-flex items-center px-3 lg:px-4 py-2 text-[13px] lg:text-sm font-medium rounded-xl transition whitespace-nowrap ${activeTab === t ? 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white' : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'}`}>
                 <span className="truncate">{t === 'search' ? 'Поиск' : t === 'docs' ? 'Документы' : t === 'favorites' ? 'Избранное' : 'Профиль'}</span>
                 {t === 'favorites' && favCount > 0 && <span className="ml-1.5 shrink-0 min-w-[20px] h-5 px-1.5 rounded-full bg-slate-900 text-white dark:bg-white dark:text-slate-900 text-[10px] font-bold tabular-nums inline-flex items-center justify-center">{favCount > 99 ? '99+' : favCount}</span>}
               </button>
             ))}
             {isAdmin && (
-                <button onClick={() => setTab('admin')} title="Только для администраторов" className={`flex items-center gap-1.5 px-3 lg:px-4 py-2 text-[13px] lg:text-sm font-medium rounded-xl transition whitespace-nowrap ${tab === 'admin' ? 'bg-violet-100 dark:bg-violet-950/60 text-violet-700 dark:text-violet-300' : 'text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-950/40'}`}>
+                <button onClick={() => setTab('admin')} title="Только для администраторов" className={`flex items-center gap-1.5 px-3 lg:px-4 py-2 text-[13px] lg:text-sm font-medium rounded-xl transition whitespace-nowrap ${activeTab === 'admin' ? 'bg-violet-100 dark:bg-violet-950/60 text-violet-700 dark:text-violet-300' : 'text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-950/40'}`}>
                 <Icon name="shield" size={15} /> Админка
               </button>
             )}
@@ -328,8 +335,10 @@ export default function App() {
           onLogin={() => { setAuthMode('login'); setShowAuth(true) }}
         />
         <div className="flex-1 min-w-0 flex flex-col">
-      {/* Tab content */}
-      {tab === 'search' && (
+      {/* Tab content — весь блок под ErrorBoundary: крах одного раздела
+          не должен рушить header/footer (белый экран). */}
+      <ErrorBoundary label="раздел">
+      {activeTab === 'search' && (
         <ErrorBoundary label="поиск">
         <SearchView
           query={search.query} setQuery={search.setQuery}
@@ -359,7 +368,7 @@ export default function App() {
         </ErrorBoundary>
       )}
 
-      {tab === 'docs' && (
+      {activeTab === 'docs' && (
         <DocsView
           docs={docs.docs} docsLoading={docs.docsLoading}
           filterStatus={search.filterStatus} setFilterStatus={search.setFilterStatus}
@@ -370,7 +379,7 @@ export default function App() {
         />
       )}
 
-      {tab === 'favorites' && !user && (
+      {activeTab === 'favorites' && !user && (
         <div className="max-w-md mx-auto text-center py-16 px-4">
           <div className="w-12 h-12 mx-auto rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400 flex items-center justify-center mb-4"><Icon name="lock" size={20} /></div>
           <h2 className="font-semibold text-slate-900 dark:text-white">Избранное доступно после входа</h2>
@@ -378,11 +387,11 @@ export default function App() {
           <button onClick={() => { setAuthMode('login'); setShowAuth(true) }} className="btn btn-md btn-primary mt-5 px-6">Войти</button>
         </div>
       )}
-      {tab === 'favorites' && user && (
+      {activeTab === 'favorites' && user && (
         <FavoritesView onOpenPdf={openPdf} user={user} />
       )}
 
-      {tab === 'profile' && (
+      {activeTab === 'profile' && (
         <ProfileView
           stats={docs.stats} docs={docs.docs} onLogout={logout}
           onAuthRequired={() => { setAuthMode('register'); setShowAuth(true) }}
@@ -394,9 +403,12 @@ export default function App() {
         />
       )}
 
-      {tab === 'admin' && user && isAdminEmail(user.email) && (
+      {/* activeTab==='admin' ⇒ user && isAdminEmail (см. utils/tabs);
+          guard внутри AdminView — вторая линия защиты («Нет доступа»). */}
+      {activeTab === 'admin' && user && (
         <AdminView user={user} />
       )}
+      </ErrorBoundary>
         </div>
       </div>
 
@@ -430,7 +442,7 @@ export default function App() {
           </Suspense>
         </ErrorBoundary>
       )}
-      <MobileNav tab={tab} favCount={favCount} isAdmin={isAdmin} user={user} onGo={goMobile} />
+      <MobileNav tab={activeTab} favCount={favCount} isAdmin={isAdmin} user={user} onGo={goMobile} />
       <footer className="mt-auto border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
         <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between gap-3 text-[11px] text-slate-400 dark:text-slate-500">
           <span className="truncate" title="Ответ только при найденной норме; без источника — честно говорит «не найдено»">snippy.llm<span className="max-md:hidden"> • быстрый поиск 5 токенов • глубокий — 10 • нет источника → нет утверждения</span></span>

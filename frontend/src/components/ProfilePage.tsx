@@ -562,7 +562,17 @@ export function ProfilePage({ stats, docs, onLogout, highlightPalette, setHighli
   // --- Quick suggestions editor state ---
   const [quickExamples, setQuickExamples] = useState<string[]>(() => loadQuickExamples())
 
-  if (!user) return null
+  // Гость/сессия потеряна: никогда не пустой блок — карточка входа.
+  if (!user) {
+    return (
+      <div className="max-w-md mx-auto bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 shadow-lg text-center">
+        <img src="/logo-64.png" alt="snippy.llm" className="w-12 h-12 mx-auto rounded-xl object-cover border border-slate-200 dark:border-slate-700 bg-white" />
+        <h3 className="font-semibold text-slate-900 dark:text-white mt-3">Профиль — войдите</h3>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Документы и поиск работают без входа. Войдите чтобы видеть профиль, ключи и статистику.</p>
+        <div className="mt-4 text-xs text-slate-400">Нажмите «Войти» в шапке</div>
+      </div>
+    )
+  }
   const displayName = user.full_name || displayNameFromEmail(user.email)
   const first = (displayName[0] || user.email[0] || '?').toUpperCase()
   const bg = stringToColor(user.email)
