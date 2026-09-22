@@ -661,6 +661,35 @@ export function AdminView({ user }: { user: any }) {
             </div>
           )}
 
+          {section === 'resets' && (
+            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
+              <div className="text-xs text-slate-400 mb-2">Заявки «Забыли пароль?» • выдайте код и передайте пользователю лично (код живёт 1 час, показывается один раз)</div>
+              {!resets.length && <div className="text-sm text-slate-500">Заявок нет.</div>}
+              {resets.map((r) => (
+                <div key={r.email} className="flex items-center gap-2 text-xs py-2 border-b border-slate-100 dark:border-slate-800 last:border-0">
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium text-slate-800 dark:text-slate-100 truncate">{r.email}</div>
+                    <div className="text-slate-400">
+                      заявка от {new Date(r.created_at).toLocaleString('ru-RU')} •{' '}
+                      {r.state === 'pending'
+                        ? 'ждёт выдачи кода'
+                        : <>код выдан, действует до {new Date(r.expires_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</>}
+                    </div>
+                  </div>
+                  <button
+                    onClick={async () => { try { const d = await approveReset(r.email); setIssuedCode({ email: r.email, code: d.code }); fetchResetRequests().then((x) => setResets(x.requests)) } catch (e: any) { alert(e.message || 'Ошибка') } }}
+                    className="btn btn-sm btn-primary py-1.5 shrink-0 w-[110px] justify-center"
+                  >{r.state === 'pending' ? 'Выдать код' : 'Перевыдать'}</button>
+                  <button
+                    onClick={async () => { if (!confirm(`Отклонить заявку ${r.email}?`)) return; try { await rejectReset(r.email); setResets((prev) => prev.filter((x) => x.email !== r.email)) } catch (e: any) { alert(e.message || 'Ошибка') } }}
+                    className="btn btn-sm btn-secondary py-1.5 shrink-0 w-[110px] justify-center"
+                  >Отклонить</button>
+                </div>
+              ))}
+              <button onClick={() => fetchResetRequests().then((d) => setResets(d.requests)).catch(() => {})} className="btn btn-sm btn-secondary mt-3"><Icon name="refresh" size={12} /> Обновить</button>
+            </div>
+          )}
+
           {(section === 'activity' || section === 'errors') && (
             <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
               {section === 'activity' ? (
@@ -711,34 +740,7 @@ export function AdminView({ user }: { user: any }) {
                 />
                 )
               })}
-              {section === 'resets' && (
-            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
-              <div className="text-xs text-slate-400 mb-2">Заявки «Забыли пароль?» • выдайте код и передайте пользователю лично (код живёт 1 час, показывается один раз)</div>
-              {!resets.length && <div className="text-sm text-slate-500">Заявок нет.</div>}
-              {resets.map((r) => (
-                <div key={r.email} className="flex items-center gap-2 text-xs py-2 border-b border-slate-100 dark:border-slate-800 last:border-0">
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium text-slate-800 dark:text-slate-100 truncate">{r.email}</div>
-                    <div className="text-slate-400">
-                      заявка от {new Date(r.created_at).toLocaleString('ru-RU')} •{' '}
-                      {r.state === 'pending'
-                        ? 'ждёт выдачи кода'
-                        : <>код выдан, действует до {new Date(r.expires_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</>}
-                    </div>
-                  </div>
-                  <button
-                    onClick={async () => { try { const d = await approveReset(r.email); setIssuedCode({ email: r.email, code: d.code }); fetchResetRequests().then((x) => setResets(x.requests)) } catch (e: any) { alert(e.message || 'Ошибка') } }}
-                    className="btn btn-sm btn-primary py-1.5 shrink-0 w-[110px] justify-center"
-                  >{r.state === 'pending' ? 'Выдать код' : 'Перевыдать'}</button>
-                  <button
-                    onClick={async () => { if (!confirm(`Отклонить заявку ${r.email}?`)) return; try { await rejectReset(r.email); setResets((prev) => prev.filter((x) => x.email !== r.email)) } catch (e: any) { alert(e.message || 'Ошибка') } }}
-                    className="btn btn-sm btn-secondary py-1.5 shrink-0 w-[110px] justify-center"
-                  >Отклонить</button>
-                </div>
-              ))}
-              <button onClick={() => fetchResetRequests().then((d) => setResets(d.requests)).catch(() => {})} className="btn btn-sm btn-secondary mt-3"><Icon name="refresh" size={12} /> Обновить</button>
-            </div>
-          )}
+
 
           {issuedCode && (
             <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setIssuedCode(null)}>
