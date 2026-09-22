@@ -176,7 +176,11 @@ export async function freezeUser(uid: string, reason = ''): Promise<{ ok: boolea
 
 // ---------- Удаление аккаунтов в архив (30 дней) ----------
 
-export interface DeletionReason { id: string; title: string; template: string }
+export interface DeletionReason {
+  id: string; title: string; template: string
+  custom?: boolean
+  default_template?: string | null
+}
 
 export const fetchDeletionReasons = () => get<{ reasons: DeletionReason[] }>('/api/admin/deletion-reasons')
 
@@ -277,4 +281,28 @@ export function generatePassword(): string {
     ;[chars[i], chars[j]] = [chars[j], chars[i]]
   }
   return chars.join('')
+}
+
+// ---------- Свои причины удаления ----------
+
+export async function addCustomReason(title: string): Promise<{ ok: boolean; id: string; title: string }> {
+  const r = await authFetch(`${WORKER_BASE}/api/admin/reasons-add`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  })
+  const d = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(d?.detail || d?.error || `reasons-add ${r.status}`)
+  return d
+}
+
+export async function removeCustomReason(id: string): Promise<{ ok: boolean }> {
+  const r = await authFetch(`${WORKER_BASE}/api/admin/reasons-remove`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id }),
+  })
+  const d = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(d?.detail || d?.error || `reasons-remove ${r.status}`)
+  return d
 }

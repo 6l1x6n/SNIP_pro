@@ -6,6 +6,8 @@ import {
   fetchAdminStats, fetchAdminUsers, fetchAdminActivity, freezeUser,
   fetchDeletionReasons, fetchArchivedUsers, deleteUserToArchive, restoreUserFromArchive, saveDeletionTemplate,
   fetchResetRequests, approveReset, rejectReset, setAdminPassword, generatePassword,
+  addCustomReason, removeCustomReason,
+  type DeletionReason as TplReason,
   type ResetRequest,
   type DeletionReason, type ArchivedUser,
   fetchAdminSettings, fetchAdminHealth, saveAdminSetting, displaySubject,
@@ -22,6 +24,88 @@ const PROVIDER_LABEL: Record<string, string> = {
   voyage: 'Voyage',
   cohere: 'Cohere',
   mistral: 'Mistral',
+}
+
+/** Вкладка «Шаблоны писем» внутри Архива: встроенные + свои причины. */
+function TemplatesTab({ tpls, tplDraft, setTplDraft, tplBusy, setTplBusy, setTpls, setReasons, newReason, setNewReason }: {
+  tpls: TplReason[]
+  tplDraft: Record<string, string>
+  setTplDraft: (f: (d: Record<string, string>) => Record<string, string>) => void
+  tplBusy: string | null
+  setTplBusy: (v: string | null) => void
+  setTpls: (r: TplReason[]) => void
+  setReasons: (r: TplReason[]) => void
+  newReason: string
+  setNewReason: (v: string) => void
+}) {
+  const reload = async () => {
+    const d = await fetchDeletionReasons()
+    setTpls(d.reasons)
+    setReasons(d.reasons)
+    return d.reasons
+  }
+  return (
+    <div className="space-y-3">
+      <div className="text-xs text-slate-400">Имя подставится автоматически, обращение «Уважаемый …» добавится само.</div>
+      {tpls.map((r) => (
+        <div key={r.id} className="rounded-xl border border-slate-200 dark:border-slate-700 p-3">
+          <div className="text-xs font-medium text-slate-700 dark:text-slate-200 mb-1.5 flex items-center gap-2">
+            {r.title}
+            {r.custom ? (
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-100 dark:bg-violet-950/50 text-violet-600 dark:text-violet-300">своя</span>
+            ) : r.template !== r.default_template ? (
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/50 text-amber-600 dark:text-amber-300">изменён</span>
+            ) : null}
+          </div>
+          <textarea
+            value={tplDraft[r.id] ?? ''}
+            onChange={(e) => setTplDraft((d) => ({ ...d, [r.id]: e.target.value }))}
+            rows={3}
+            className="input text-xs"
+          />
+          {!r.custom && r.default_template && (
+            <details className="mt-1.5">
+              <summary className="text-[11px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 cursor-pointer select-none">Текст по умолчанию</summary>
+              <div className="text-[11px] text-slate-400 leading-relaxed mt-1 pl-2 border-l-2 border-slate-100 dark:border-slate-800">{r.default_template}</div>
+            </details>
+          )}
+          <div className="flex flex-wrap gap-2 mt-2">
+            <button
+              disabled={tplBusy === r.id || (tplDraft[r.id] ?? '') === r.template}
+              onClick={async () => { setTplBusy(r.id); try { await saveDeletionTemplate(r.id, tplDraft[r.id] ?? ''); await reload() } catch (e: any) { alert(e.message || 'Ошибка сохранения') } finally { setTplBusy(null) } }}
+              className="btn btn-sm btn-primary py-1.5"
+            >Сохранить</button>
+            {!r.custom && r.default_template && r.template !== r.default_template && (
+              <button
+                disabled={tplBusy === r.id}
+                onClick={async () => { setTplBusy(r.id); try { await saveDeletionTemplate(r.id, ''); const rs = await reload(); setTplDraft((x) => ({ ...x, [r.id]: rs.find((z) => z.id === r.id)?.template ?? '' })) } catch (e: any) { alert(e.message || 'Ошибка сброса') } finally { setTplBusy(null) } }}
+                className="btn btn-sm btn-secondary py-1.5"
+              >Сбросить к умолчанию</button>
+            )}
+            {r.custom && (
+              <button
+                disabled={tplBusy === r.id}
+                onClick={async () => { if (!confirm(`Удалить причину «${r.title}»?`)) return; setTplBusy(r.id); try { await removeCustomReason(r.id); const rs = await reload(); setTplDraft((x) => { const n = { ...x }; delete n[r.id]; return n }) } catch (e: any) { alert(e.message || 'Ошибка') } finally { setTplBusy(null) } }}
+                className="btn btn-sm border border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 bg-transparent py-1.5"
+              >Удалить причину</button>
+            )}
+          </div>
+        </div>
+      ))}
+      <div className="flex gap-2 pt-1">
+        <input value={newReason} onChange={(e) => setNewReason(e.target.value)} placeholder="Своя причина, напр. «Спам-жалобы»" className="input flex-1 text-xs" />
+        <button
+          disabled={newReason.trim().length < 3 || tplBusy === 'add'}
+          onClick={async () => {
+            setTplBusy('add')
+            try { await addCustomReason(newReason.trim()); setNewReason(''); const rs = await fetchDeletionReasons(); setTpls(rs.reasons); setReasons(rs.reasons); setTplDraft((x) => ({ ...x, [rs.reasons.at(-1)!.id]: '' })) }
+            catch (e: any) { alert(e.message || 'Ошибка') } finally { setTplBusy(null) }
+          }}
+          className="btn btn-sm btn-primary py-1.5 shrink-0"
+        >+ Добавить причину</button>
+      </div>
+    </div>
+  )
 }
 
 type SectionId = 'overview' | 'quotas' | 'users' | 'archive' | 'resets' | 'activity' | 'errors' | 'params' | 'feedback'
@@ -163,6 +247,8 @@ export function AdminView({ user }: { user: any }) {
   const [tpls, setTpls] = useState<DeletionReason[]>([])
   const [tplDraft, setTplDraft] = useState<Record<string, string>>({})
   const [tplBusy, setTplBusy] = useState<string | null>(null)
+  const [archTab, setArchTab] = useState<'accounts' | 'templates'>('accounts')
+  const [newReason, setNewReason] = useState('')
   const [resets, setResets] = useState<ResetRequest[]>([])
   const [issuedCode, setIssuedCode] = useState<{ email: string; code: string } | null>(null)
   const [pwUser, setPwUser] = useState<any>(null)
@@ -227,6 +313,7 @@ export function AdminView({ user }: { user: any }) {
     if (section === 'resets') fetchResetRequests().then((d) => setResets(d.requests)).catch(() => {})
     if (section !== 'archive') return
     if (!archived.length) fetchArchivedUsers().then((d) => setArchived(d.archived)).catch(() => {})
+    if (!tpls.length) fetchDeletionReasons().then((d) => { setTpls(d.reasons); setTplDraft(Object.fromEntries(d.reasons.map((r) => [r.id, r.template]))) }).catch(() => {})
     if (!tpls.length) fetchDeletionReasons().then((d) => {
       setReasons(d.reasons)
       setTpls(d.reasons)
@@ -539,6 +626,18 @@ export function AdminView({ user }: { user: any }) {
 
           {section === 'archive' && (
             <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
+              <div className="flex gap-1 mb-3 p-1 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs">
+                <button onClick={() => setArchTab('accounts')} className={`flex-1 py-1.5 rounded-lg font-medium transition ${archTab === 'accounts' ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}>Удалённые аккаунты</button>
+                <button onClick={() => setArchTab('templates')} className={`flex-1 py-1.5 rounded-lg font-medium transition ${archTab === 'templates' ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}>Шаблоны писем</button>
+              </div>
+              {archTab === 'templates' && (
+                <TemplatesTab
+                  tpls={tpls} tplDraft={tplDraft} setTplDraft={setTplDraft} tplBusy={tplBusy} setTplBusy={setTplBusy}
+                  setTpls={setTpls} setReasons={setReasons} newReason={newReason} setNewReason={setNewReason}
+                />
+              )}
+              {archTab === 'accounts' && (
+              <>
               <div className="text-xs text-slate-400 mb-2">Удалённые аккаунты • хранятся 30 дней, затем очищаются автоматически</div>
               {!archived.length && <div className="text-sm text-slate-500">Архив пуст.</div>}
               {archived.map((a) => (
@@ -556,40 +655,9 @@ export function AdminView({ user }: { user: any }) {
                 </div>
               ))}
               <button onClick={() => { setArchived([]); fetchArchivedUsers().then((d) => setArchived(d.archived)).catch(() => {}) }} className="btn btn-sm btn-secondary mt-3"><Icon name="refresh" size={12} /> Обновить</button>
+              </>
+              )}
 
-              <div className="mt-5 pt-4 border-t border-slate-100 dark:border-slate-800">
-                <div className="text-xs text-slate-400 mb-2">Шаблоны писем удалённым • имя подставится автоматически, обращение «Уважаемый …» добавится само</div>
-                <div className="space-y-3">
-                  {tpls.map((r) => (
-                    <div key={r.id} className="rounded-xl border border-slate-200 dark:border-slate-700 p-3">
-                      <div className="text-xs font-medium text-slate-700 dark:text-slate-200 mb-1.5 flex items-center gap-2">
-                        {r.title}
-                        {r.custom && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-100 dark:bg-violet-950/50 text-violet-600 dark:text-violet-300">изменён</span>}
-                      </div>
-                      <textarea
-                        value={tplDraft[r.id] ?? ''}
-                        onChange={(e) => setTplDraft((d) => ({ ...d, [r.id]: e.target.value }))}
-                        rows={3}
-                        className="input text-xs"
-                      />
-                      <div className="flex gap-2 mt-2">
-                        <button
-                          disabled={tplBusy === r.id || (tplDraft[r.id] ?? '') === r.template}
-                          onClick={async () => { setTplBusy(r.id); try { await saveDeletionTemplate(r.id, tplDraft[r.id] ?? ''); const d = await fetchDeletionReasons(); setTpls(d.reasons) } catch (e: any) { alert(e.message || 'Ошибка сохранения') } finally { setTplBusy(null) } }}
-                          className="btn btn-sm btn-primary py-1.5"
-                        >Сохранить</button>
-                        {r.custom && (
-                          <button
-                            disabled={tplBusy === r.id}
-                            onClick={async () => { setTplBusy(r.id); try { await saveDeletionTemplate(r.id, ''); const d = await fetchDeletionReasons(); setTpls(d.reasons); setTplDraft((x) => ({ ...x, [r.id]: d.reasons.find((z) => z.id === r.id)?.template ?? '' })) } catch (e: any) { alert(e.message || 'Ошибка сброса') } finally { setTplBusy(null) } }}
-                            className="btn btn-sm btn-secondary py-1.5"
-                          >Сбросить к стандартному</button>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
             </div>
           )}
 

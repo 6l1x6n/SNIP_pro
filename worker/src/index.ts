@@ -105,6 +105,40 @@ export const DELETION_REASONS: Array<{ id: string; title: string; template: stri
   },
 ];
 
+/** Свои причины админа: JSON [{id,title}] в settings (del_tpl_custom). */
+async function getCustomReasons(env: Env): Promise<Array<{ id: string; title: string }>> {
+  try {
+    const raw = (await getSettings(env)).values["del_tpl_custom"];
+    const arr = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter((r: any) => r && typeof r.id === "string" && typeof r.title === "string")
+      .slice(0, 10)
+      .map((r: any) => ({ id: String(r.id).slice(0, 24), title: String(r.title).slice(0, 100) }));
+  } catch {
+    return [];
+  }
+}
+
+/** Эффективные причины: встроенные (с шаблонами из settings) + свои. */
+async function effectiveReasons(env: Env): Promise<Array<{ id: string; title: string; template: string; custom: boolean; default_template: string | null }>> {
+  const { values } = await getSettings(env);
+  const built = DELETION_REASONS.map((r) => ({
+    ...r,
+    template: values[`del_tpl_${r.id}`]?.trim() || r.template,
+    default_template: r.template,
+    custom: false,
+  }));
+  const custom = (await getCustomReasons(env)).map((r) => ({
+    id: r.id,
+    title: r.title,
+    template: values[`del_tpl_${r.id}`]?.trim() || "",
+    default_template: null,
+    custom: true,
+  }));
+  return [...built, ...custom];
+}
+
 /** Шаблон причины → финальный текст письма: обращение + подстановка {имя} в любом месте текста. */
 export function buildDeletionText(name: string | null, template: string): string {
   const who = String(name ?? "").trim() || "пользователь";
@@ -4517,7 +4551,10 @@ export default {
           const def = SETTING_DEFS[key];
           const isLink = !def && (LLM_LINK_DEFS as string[]).includes(key);
           // Шаблоны писем об удалении: строковые, до 2000 знаков (в отличие от числовых квот)
-          const isTpl = key.startsWith("del_tpl_") && DELETION_REASONS.some((r) => r.id === key.slice("del_tpl_".length));
+          const customIds = (await getCustomReasons(env)).map((r) => r.id);
+          const isTpl =
+            (key.startsWith("del_tpl_") && DELETION_REASONS.some((r) => r.id === key.slice("del_tpl_".length))) ||
+            (key.startsWith("del_tpl_c_") && customIds.includes(key.slice("del_tpl_".length)));
           if (isTpl) {
             const text = String(body.value ?? "").trim().slice(0, 2000);
             await ensureSettingsTable(env);
@@ -4682,20 +4719,45 @@ export default {
           return json({ ok: true }, 200, cors);
         }
 
-        // GET /api/admin/deletion-reasons — причины с ЭФФЕКТИВНЫМИ шаблонами (правки админов из settings поверх дефолтов)
+        // GET /api/admin/deletion-reasons — эффективные причины (дефолты + свои), с текстами по умолчанию
         if (url.pathname === "/api/admin/deletion-reasons" && req.method === "GET") {
-          const { values } = await getSettings(env);
-          return json(
-            {
-              reasons: DELETION_REASONS.map((r) => ({
-                ...r,
-                template: values[`del_tpl_${r.id}`]?.trim() || r.template,
-                custom: Boolean(values[`del_tpl_${r.id}`]?.trim()),
-              })),
-            },
-            200,
-            cors
-          );
+          return json({ reasons: await effectiveReasons(env) }, 200, cors);
+        }
+
+        // POST /api/admin/reasons-add {title} — своя причина удаления (id генерируется)
+        if (url.pathname === "/api/admin/reasons-add" && req.method === "POST") {
+          const body = (await req.json().catch(() => ({}))) as any;
+          const title = String(body.title ?? "").trim().slice(0, 100);
+          if (title.length < 3) return json({ error: "bad_title", detail: "Название — от 3 символов" }, 400, cors);
+          const custom = await getCustomReasons(env);
+          if (custom.length >= 10) return json({ error: "too_many", detail: "Максимум 10 своих причин" }, 400, cors);
+          const id = "c_" + [...crypto.getRandomValues(new Uint8Array(4))].map((b) => b.toString(16).padStart(2, "0")).join("");
+          custom.push({ id, title });
+          await ensureSettingsTable(env);
+          await env.DB.prepare(
+            "INSERT INTO settings (key, value, updated_at) VALUES ('del_tpl_custom', ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at"
+          )
+            .bind(JSON.stringify(custom), new Date().toISOString())
+            .run();
+          settingsCache = null;
+          return json({ ok: true, id, title }, 200, cors);
+        }
+
+        // POST /api/admin/reasons-remove {id} — удалить свою причину (и её шаблон)
+        if (url.pathname === "/api/admin/reasons-remove" && req.method === "POST") {
+          const body = (await req.json().catch(() => ({}))) as any;
+          const id = String(body.id ?? "").slice(0, 24);
+          if (!id.startsWith("c_")) return json({ error: "bad_id", detail: "Свои причины удалять можно, встроенные — нет" }, 400, cors);
+          const custom = (await getCustomReasons(env)).filter((r) => r.id !== id);
+          await ensureSettingsTable(env);
+          await env.DB.batch([
+            env.DB.prepare(
+              "INSERT INTO settings (key, value, updated_at) VALUES ('del_tpl_custom', ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at"
+            ).bind(JSON.stringify(custom), new Date().toISOString()),
+            env.DB.prepare("DELETE FROM settings WHERE key=?").bind(`del_tpl_${id}`),
+          ]);
+          settingsCache = null;
+          return json({ ok: true }, 200, cors);
         }
 
         // GET /api/admin/archived — архив удалённых аккаунтов (+ ленивая чистка просроченных)
@@ -4716,8 +4778,9 @@ export default {
         if (url.pathname === "/api/admin/delete-user" && req.method === "POST") {
           const body = (await req.json().catch(() => ({}))) as any;
           const uid = String(body.uid ?? "").slice(0, 64);
-          const reason = DELETION_REASONS.find((r) => r.id === body.reason) ?? DELETION_REASONS[DELETION_REASONS.length - 1];
           if (!uid) return json({ error: "uid required" }, 400, cors);
+          const allReasons = await effectiveReasons(env);
+          const reason = allReasons.find((r) => r.id === body.reason) ?? allReasons[allReasons.length - 1];
           const user = await env.DB.prepare("SELECT id, email, password_hash, full_name, created_at FROM users WHERE id=?").bind(uid).first<{
             id: string; email: string; password_hash: string; full_name: string | null; created_at: string | null;
           }>();
@@ -4726,8 +4789,10 @@ export default {
           const nowIso = new Date().toISOString();
           const purgeAfter = new Date(Date.now() + ARCHIVE_DAYS * 86400000).toISOString();
           const name = normalizeName(user.full_name);
-          const tpl = ((await getSettings(env)).values[`del_tpl_${reason.id}`] ?? "").trim() || reason.template;
+          const tpl = reason.template;
           const text = buildDeletionText(name, String(body.reason_text ?? "").trim() || tpl);
+          if (!text.replace(`Уважаемый ${name || "пользователь"}!`, "").trim())
+            return json({ error: "empty_text", detail: "Опишите причину — текст письма пуст" }, 400, cors);
           const subject = `user:${uid}`;
           const bal = await env.DB.prepare("SELECT credits FROM balances WHERE subject=?").bind(subject).first<{ credits: number }>();
           const take = bal?.credits ?? 0;
